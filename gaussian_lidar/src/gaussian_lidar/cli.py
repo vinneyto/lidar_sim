@@ -35,7 +35,7 @@ async def run(args: argparse.Namespace) -> None:
     logging.info("Built BVH with %d nodes", len(bvh.metadata))
     service = LidarService(MetalTracer(gaussians, bvh, args.sigma_extent))
     if args.transport == "websocket":
-        await serve_websocket(service, args.host, args.port)
+        await serve_websocket(service, args.host, args.port, args.ply)
     else:
         await serve_rabbitmq(service, args.rabbitmq_url, args.queue)
 
