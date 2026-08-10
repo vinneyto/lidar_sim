@@ -20,6 +20,26 @@ uv sync
 uv run gaussian-lidar /path/to/model.ply --transport websocket --host 127.0.0.1 --port 8765
 ```
 
+### Отладочный 3D-интерфейс
+
+WebSocket-транспорт также раздаёт исходный PLY по `/scene.ply` и собранный интерфейс по
+корневому URL. Интерфейс на Vite, TypeScript, Three.js и Spark показывает сплаты; наведение
+на сцену ставит метровый вертикальный маркер, верхняя точка которого используется как позиция
+лидара. После небольшого debounce результат сканирования рисуется поверх сцены сферами.
+
+Перед первым запуском соберите frontend:
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+uv run gaussian-lidar /path/to/model.ply --host 127.0.0.1 --port 8765
+```
+
+После этого откройте `http://127.0.0.1:8765/`. Для разработки можно запустить `npm run dev`:
+Vite проксирует `/scene.ply` и `/ws` на сервис по адресу `127.0.0.1:8765`.
+
 Для RabbitMQ установите extra и укажите URL/очередь:
 
 ```bash
