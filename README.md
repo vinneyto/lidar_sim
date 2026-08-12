@@ -69,11 +69,11 @@ its camera controls instead of falling back to its default Z-up root view.
 This setting changes the viewer convention only; it does not flip or otherwise
 transform scene data.
 
-The second experiment places the orbit center at the center of the scene's
-axis-aligned bounds. Its radius, angular velocity, update interval, and number
-of scans are constants at the top of `experiments/02_circular_scan.py`. Rerun
-shows the path as a thin ring and records every sensor position and return cloud
-on the `scan` timeline.
+The second experiment uses a fixed one-meter orbit in the XZ plane, centered at
+the coordinate origin. Its angular velocity, update interval, and number of
+scans are constants at the top of `experiments/02_circular_scan.py`. Rerun shows
+the path as a thin ring and records every sensor position and return cloud on
+the `scan` timeline.
 
 ## Scope and future work
 

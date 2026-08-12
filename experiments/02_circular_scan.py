@@ -4,8 +4,8 @@ Edit the constants below, then run:
 
     uv run python experiments/02_circular_scan.py
 
-The orbit is centered on the scene's axis-aligned bounding-box center and lies
-in the XZ plane. Every pose and its return cloud is recorded on Rerun's
+The one-meter orbit is centered at the coordinate origin and lies in the XZ
+plane. Every pose and its return cloud is recorded on Rerun's
 ``scan`` timeline, so the timeline controls can be used to inspect the motion.
 """
 
@@ -40,7 +40,8 @@ FAR = 100.0
 SIGMA_CUTOFF = 3.0
 ALPHA_THRESHOLD = 0.5
 
-ORBIT_RADIUS = 3.0
+ORBIT_CENTER = (0.0, 0.0, 0.0)
+ORBIT_RADIUS = 1.0
 ANGULAR_VELOCITY_DEGREES_PER_SECOND = 5.0
 STEP_SECONDS = 0.1
 NUMBER_OF_STEPS = 360
@@ -79,27 +80,26 @@ def select_device(backend: str) -> torch.device:
     return torch.device("mps")
 
 
-def scene_center(scene: GaussianCloud) -> torch.Tensor:
-    """Return the center of the scene's axis-aligned mean bounds."""
-    return (scene.means.amin(dim=0) + scene.means.amax(dim=0)) / 2
-
-
-def orbit_position(
-    center: torch.Tensor, radius: float, angle_radians: float
-) -> torch.Tensor:
-    """Return a point on an XZ-plane circle around ``center``."""
+def orbit_position(device: torch.device, angle_radians: float) -> torch.Tensor:
+    """Return a point on the fixed one-meter XZ-plane orbit."""
+    center = torch.tensor(ORBIT_CENTER, dtype=torch.float32, device=device)
     offset = center.new_tensor(
-        [radius * math.cos(angle_radians), 0.0, radius * math.sin(angle_radians)]
+        [
+            ORBIT_RADIUS * math.cos(angle_radians),
+            0.0,
+            ORBIT_RADIUS * math.sin(angle_radians),
+        ]
     )
     return center + offset
 
 
-def orbit_points(center: torch.Tensor, radius: float, samples: int) -> torch.Tensor:
-    """Create a closed polyline describing the sensor orbit."""
-    angles = torch.linspace(0, 2 * math.pi, samples + 1, device=center.device)
-    points = center.expand(samples + 1, 3).clone()
-    points[:, 0] += radius * torch.cos(angles)
-    points[:, 2] += radius * torch.sin(angles)
+def orbit_points() -> torch.Tensor:
+    """Create a closed polyline describing the fixed sensor orbit."""
+    center = torch.tensor(ORBIT_CENTER, dtype=torch.float32)
+    angles = torch.linspace(0, 2 * math.pi, RING_SAMPLES + 1)
+    points = center.expand(RING_SAMPLES + 1, 3).clone()
+    points[:, 0] += ORBIT_RADIUS * torch.cos(angles)
+    points[:, 2] += ORBIT_RADIUS * torch.sin(angles)
     return points
 
 
@@ -114,7 +114,7 @@ def create_config() -> LidarConfig:
     )
 
 
-def initialize_rerun(scene: GaussianCloud, center: torch.Tensor) -> None:
+def initialize_rerun(scene: GaussianCloud) -> None:
     """Open Rerun and log the immutable scene and circular trajectory."""
     import rerun as rr
 
@@ -154,7 +154,7 @@ def initialize_rerun(scene: GaussianCloud, center: torch.Tensor) -> None:
     rr.log(
         "world/lidar/orbit",
         rr.LineStrips3D(
-            [numpy(orbit_points(center, ORBIT_RADIUS, RING_SAMPLES))],
+            [numpy(orbit_points())],
             colors=[120, 170, 255],
             radii=0.01,
         ),
@@ -192,12 +192,10 @@ def run_experiment() -> None:
 
     device = select_device(BACKEND)
     scene_cpu = load_scene(PLY_PATH)
-    center_cpu = scene_center(scene_cpu)
     bvh_cpu = create_bvh(scene_cpu)
-    initialize_rerun(scene_cpu, center_cpu)
+    initialize_rerun(scene_cpu)
 
     scene, bvh = scene_cpu.to(device), bvh_cpu.to(device)
-    center = center_cpu.to(device)
     simulator = LidarSimulator(scene, bvh, BACKEND)
     config = create_config()
     orientation = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)
@@ -205,7 +203,7 @@ def run_experiment() -> None:
 
     for step in range(NUMBER_OF_STEPS):
         angle = angular_velocity * STEP_SECONDS * step
-        pose = LidarPose(orbit_position(center, ORBIT_RADIUS, angle), orientation)
+        pose = LidarPose(orbit_position(device, angle), orientation)
         scan = simulator.scan(pose, config)
         if device.type == "mps":
             torch.mps.synchronize()
