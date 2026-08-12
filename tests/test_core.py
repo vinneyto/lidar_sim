@@ -129,6 +129,8 @@ def test_rotated_anisotropic_peak():
 
 def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
     logged = {}
+    log_static = {}
+    sent_blueprints = []
 
     class GaussianSplats3D:
         def __init__(self, centers, *, scales, quaternions, colors):
@@ -142,11 +144,35 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
             self.args = args
             self.kwargs = kwargs
 
+    view_coordinates = SimpleNamespace(
+        RIGHT_HAND_X_UP="x-up",
+        RIGHT_HAND_X_DOWN="x-down",
+        RIGHT_HAND_Y_UP="y-up",
+        RIGHT_HAND_Y_DOWN="y-down",
+        RIGHT_HAND_Z_UP="z-up",
+        RIGHT_HAND_Z_DOWN="z-down",
+    )
+
+    class Spatial3DView:
+        def __init__(self, *, origin):
+            self.origin = origin
+
+    class Blueprint:
+        def __init__(self, view):
+            self.view = view
+
+    def log(path, value, *, static=False):
+        logged[path] = value
+        log_static[path] = static
+
     rerun = SimpleNamespace(
         GaussianSplats3D=GaussianSplats3D,
         Points3D=Points3D,
+        ViewCoordinates=view_coordinates,
+        blueprint=SimpleNamespace(Blueprint=Blueprint, Spatial3DView=Spatial3DView),
         init=lambda *args, **kwargs: None,
-        log=lambda path, value: logged.__setitem__(path, value),
+        send_blueprint=sent_blueprints.append,
+        log=log,
     )
     monkeypatch.setitem(sys.modules, "rerun", rerun)
     scene = GaussianCloud(
@@ -158,14 +184,17 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
     )
     scan = SimpleNamespace(valid_points=lambda: torch.tensor([[4.0, 5.0, 6.0]]))
 
-    visualize(scene, pose(), scan)
+    visualize(scene, pose(), scan, up_axis="-Y")
 
-    splats = logged["scene/gaussians"]
+    splats = logged["world/scene/gaussians"]
     assert splats.centers.tolist() == [[1.0, 2.0, 3.0]]
     assert splats.scales.tolist() == [[0.5, 1.0, 1.5]]
     assert splats.quaternions.tolist() == pytest.approx([[0.1, 0.2, 0.3, 0.5]])
     assert splats.colors.tolist() == [[255, 63, 0, 127]]
-    assert logged["lidar/returns"].kwargs["radii"] == 0.01
+    assert logged["world/lidar/returns"].kwargs["radii"] == 0.01
+    assert logged["world"] == "y-down"
+    assert sent_blueprints[0].view.origin == "world"
+    assert log_static["world"]
 
 
 @pytest.mark.skipif(
