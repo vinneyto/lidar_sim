@@ -32,6 +32,10 @@ Coordinates are right-handed: `+X` forward, `+Y` left, `+Z` up. Azimuth is
 endpoint-exclusive, so the default `[-π, π)` scan does not duplicate its seam.
 CLI yaw/pitch/roll are degrees composed as intrinsic Z-Y-X rotations.
 
+## Учебный курс
+
+Пошаговый русскоязычный курс из десяти практических задач находится в [`course/`](course/README.md). В ходе курса пользователь собирает второй эксперимент с круговым сканированием и знакомится с публичными модулями проекта.
+
 ## Library API
 
 ```python
