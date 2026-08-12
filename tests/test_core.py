@@ -130,14 +130,21 @@ def test_rotated_anisotropic_peak():
 def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
     logged = {}
 
-    class Archetype:
+    class GaussianSplats3D:
+        def __init__(self, centers, *, scales, quaternions, colors):
+            self.centers = centers
+            self.scales = scales
+            self.quaternions = quaternions
+            self.colors = colors
+
+    class Points3D:
         def __init__(self, *args, **kwargs):
             self.args = args
             self.kwargs = kwargs
 
     rerun = SimpleNamespace(
-        GaussianSplats3D=Archetype,
-        Points3D=Archetype,
+        GaussianSplats3D=GaussianSplats3D,
+        Points3D=Points3D,
         init=lambda *args, **kwargs: None,
         log=lambda path, value: logged.__setitem__(path, value),
     )
@@ -153,11 +160,11 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
 
     visualize(scene, pose(), scan)
 
-    splats = logged["scene/gaussians"].kwargs
-    assert splats["means"].tolist() == [[1.0, 2.0, 3.0]]
-    assert splats["scales"].tolist() == [[0.5, 1.0, 1.5]]
-    assert splats["quaternions"].tolist() == pytest.approx([[0.1, 0.2, 0.3, 0.5]])
-    assert splats["colors"].tolist() == [[255, 63, 0, 127]]
+    splats = logged["scene/gaussians"]
+    assert splats.centers.tolist() == [[1.0, 2.0, 3.0]]
+    assert splats.scales.tolist() == [[0.5, 1.0, 1.5]]
+    assert splats.quaternions.tolist() == pytest.approx([[0.1, 0.2, 0.3, 0.5]])
+    assert splats.colors.tolist() == [[255, 63, 0, 127]]
     assert logged["lidar/returns"].kwargs["radii"] == 0.01
 
 

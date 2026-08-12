@@ -29,7 +29,7 @@ def visualize(scene: GaussianCloud, pose: LidarPose, scan: LidarScan) -> None:
     rr.log(
         "scene/gaussians",
         rr.GaussianSplats3D(
-            means=to_numpy(scene.means),
+            to_numpy(scene.means),
             scales=to_numpy(scene.scales),
             quaternions=to_numpy(quaternions),
             colors=rgba,
