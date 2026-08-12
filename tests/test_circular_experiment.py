@@ -1,6 +1,8 @@
 import importlib.util
 import math
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -37,3 +39,34 @@ def test_orbit_polyline_is_closed():
 
     assert points.shape == (17, 3)
     torch.testing.assert_close(points[0], points[-1], atol=1e-6, rtol=0)
+
+
+def test_log_scan_uses_current_rerun_timeline_api(monkeypatch):
+    times = []
+    logged = []
+
+    class Points3D:
+        def __init__(self, points, **kwargs):
+            self.points = points
+            self.kwargs = kwargs
+
+    rerun = SimpleNamespace(
+        Points3D=Points3D,
+        set_time=lambda timeline, *, sequence: times.append((timeline, sequence)),
+        log=lambda path, value: logged.append((path, value)),
+    )
+    monkeypatch.setitem(sys.modules, "rerun", rerun)
+
+    circular_scan.log_scan(
+        7,
+        circular_scan.LidarPose(
+            torch.tensor([1.0, 2.0, 3.0]), torch.tensor([1.0, 0.0, 0.0, 0.0])
+        ),
+        torch.tensor([[4.0, 5.0, 6.0]]),
+    )
+
+    assert times == [("scan", 7)]
+    assert [path for path, _ in logged] == [
+        "world/lidar/position",
+        "world/lidar/returns",
+    ]

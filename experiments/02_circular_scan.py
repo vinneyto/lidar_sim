@@ -166,7 +166,9 @@ def log_scan(step: int, pose: LidarPose, points: torch.Tensor) -> None:
     """Record one moving sensor pose and return cloud on the scan timeline."""
     import rerun as rr
 
-    rr.set_time_sequence("scan", step)
+    # Rerun 0.23+ uses the unified set_time API. Passing an integer sequence
+    # value gives every scan its own frame on the timeline.
+    rr.set_time("scan", sequence=step)
     rr.log(
         "world/lidar/position",
         rr.Points3D(
