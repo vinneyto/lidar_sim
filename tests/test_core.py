@@ -1,4 +1,6 @@
 import math
+import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -14,6 +16,7 @@ from gs_lidar import (
     generate_rays,
 )
 from gs_lidar.gaussian_geometry import ray_gaussian_peaks
+from gs_lidar.rerun_viewer import visualize
 
 
 def cloud(x, opacity):
@@ -122,6 +125,47 @@ def test_rotated_anisotropic_peak():
     )
     assert t.item() == pytest.approx(5)
     assert d.item() == pytest.approx(4)
+
+
+def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
+    logged = {}
+
+    class GaussianSplats3D:
+        def __init__(self, centers, *, scales, quaternions, colors):
+            self.centers = centers
+            self.scales = scales
+            self.quaternions = quaternions
+            self.colors = colors
+
+    class Points3D:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    rerun = SimpleNamespace(
+        GaussianSplats3D=GaussianSplats3D,
+        Points3D=Points3D,
+        init=lambda *args, **kwargs: None,
+        log=lambda path, value: logged.__setitem__(path, value),
+    )
+    monkeypatch.setitem(sys.modules, "rerun", rerun)
+    scene = GaussianCloud(
+        means=torch.tensor([[1.0, 2.0, 3.0]]),
+        scales=torch.tensor([[0.5, 1.0, 1.5]]),
+        rotations=torch.tensor([[0.5, 0.1, 0.2, 0.3]]),
+        opacities=torch.tensor([0.5]),
+        colors=torch.tensor([[1.0, 0.25, 0.0]]),
+    )
+    scan = SimpleNamespace(valid_points=lambda: torch.tensor([[4.0, 5.0, 6.0]]))
+
+    visualize(scene, pose(), scan)
+
+    splats = logged["scene/gaussians"]
+    assert splats.centers.tolist() == [[1.0, 2.0, 3.0]]
+    assert splats.scales.tolist() == [[0.5, 1.0, 1.5]]
+    assert splats.quaternions.tolist() == pytest.approx([[0.1, 0.2, 0.3, 0.5]])
+    assert splats.colors.tolist() == [[255, 63, 0, 127]]
+    assert logged["lidar/returns"].kwargs["radii"] == 0.01
 
 
 @pytest.mark.skipif(
