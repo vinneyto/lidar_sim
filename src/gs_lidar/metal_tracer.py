@@ -25,6 +25,11 @@ class MetalLidarTracer:
         if scene.means.device.type != "mps" or bvh.bbox_min.device.type != "mps":
             raise ValueError("scene and BVH must already reside on MPS")
         origins, directions = generate_rays(pose, config)
+        # generate_rays expands the single pose position without copying it.
+        # The Metal shader indexes origins as a packed array, so passing that
+        # zero-stride view makes every index after zero read unrelated memory.
+        origins = origins.contiguous()
+        directions = directions.contiguous()
         n = origins.shape[0]
         ranges = torch.empty(n, device="mps")
         points = torch.empty((n, 3), device="mps")
@@ -64,6 +69,15 @@ class MetalLidarTracer:
             scalar(config.accumulated_alpha_threshold),
         )
         self.kernel(*args, threads=n)
+
+        # ``compile_shader`` dispatches asynchronously, but several input
+        # buffers above (generated rays and scalar configuration tensors) are
+        # local temporaries. Keep them alive until Metal has consumed them.
+        # Otherwise the allocator can reuse those buffers for the next scan;
+        # repeated dispatches then alternate between stale/corrupted inputs and
+        # even corrupt the overflow counters.
+        torch.mps.synchronize()
+
         shape = (config.elevation_samples, config.azimuth_samples)
         return LidarScan(
             ranges.reshape(shape),

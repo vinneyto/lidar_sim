@@ -321,8 +321,6 @@ def run_experiment() -> None:
         angle = angular_velocity * STEP_SECONDS * step
         pose = LidarPose(orbit_position(device, angle), orientation)
         scan = simulator.scan(pose, config)
-        if device.type == "mps":
-            torch.mps.synchronize()
         diagnostics, previous_diagnostics = scan_diagnostics(
             step, pose, scan, previous_diagnostics
         )
