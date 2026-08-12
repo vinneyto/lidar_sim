@@ -130,6 +130,7 @@ def test_rotated_anisotropic_peak():
 def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
     logged = {}
     log_static = {}
+    sent_blueprints = []
 
     class GaussianSplats3D:
         def __init__(self, centers, *, scales, quaternions, colors):
@@ -156,6 +157,14 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
         RIGHT_HAND_Z_DOWN="z-down",
     )
 
+    class Spatial3DView:
+        def __init__(self, *, origin):
+            self.origin = origin
+
+    class Blueprint:
+        def __init__(self, view):
+            self.view = view
+
     def log(path, value, *, static=False):
         logged[path] = value
         log_static[path] = static
@@ -165,7 +174,9 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
         Points3D=Points3D,
         Arrows3D=Arrows3D,
         ViewCoordinates=view_coordinates,
+        blueprint=SimpleNamespace(Blueprint=Blueprint, Spatial3DView=Spatial3DView),
         init=lambda *args, **kwargs: None,
+        send_blueprint=sent_blueprints.append,
         log=log,
     )
     monkeypatch.setitem(sys.modules, "rerun", rerun)
@@ -187,6 +198,7 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
     assert splats.colors.tolist() == [[255, 63, 0, 127]]
     assert logged["world/lidar/returns"].kwargs["radii"] == 0.01
     assert logged["world"] == "y-down"
+    assert sent_blueprints[0].view.origin == "world"
     assert log_static["world"] and log_static["world/axes"]
     axes = logged["world/axes"].kwargs
     assert axes["vectors"] == [

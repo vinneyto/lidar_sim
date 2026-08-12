@@ -15,15 +15,14 @@ def visualize(
     pose: LidarPose,
     scan: LidarScan,
     *,
-    up_axis: UpAxis = "+Z",
+    up_axis: UpAxis = "+Y",
     axis_length: float = 1.0,
 ) -> None:
     """Visualize a scan with an origin axis helper and a configurable camera up axis.
 
     ``up_axis`` changes Rerun's world-coordinate convention, which controls the
     turntable camera without modifying the scene coordinates. The simulator's
-    native convention is ``+Z`` up; reconstructed scenes can instead use, for
-    example, ``-Y`` up.
+    native convention is ``+Z`` up, while the example model uses ``+Y`` up.
     """
     import rerun as rr
 
@@ -31,6 +30,14 @@ def visualize(
         raise ValueError("axis_length must be positive")
 
     rr.init("gs-lidar", spawn=True)
+
+    # Without an explicit view origin Rerun creates its 3D view at "/".  The
+    # ViewCoordinates logged below live at "world", so a root view falls back
+    # to Z-up turntable controls even though its child entities are annotated
+    # as Y-up.  Anchor the view at the same entity as the coordinate convention.
+    rr.send_blueprint(
+        rr.blueprint.Blueprint(rr.blueprint.Spatial3DView(origin="world"))
+    )
 
     view_coordinates = {
         "+X": rr.ViewCoordinates.RIGHT_HAND_X_UP,

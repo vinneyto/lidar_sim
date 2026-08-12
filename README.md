@@ -62,8 +62,11 @@ archetype, including their anisotropic scales, rotations, colors, and opacities.
 The viewer logs a red/green/blue `+X`/`+Y`/`+Z` axis helper at the world origin.
 Set `RERUN_UP_AXIS` in the experiment to `+X`, `-X`, `+Y`, `-Y`, `+Z`, or `-Z`
 to match a reconstructed model's coordinate convention and make Rerun's
-turntable camera orbit with the intended side facing up. This setting changes
-the viewer convention only; it does not flip or otherwise transform scene data.
+turntable camera orbit around that axis (the example defaults to `+Y`). The
+3D view is explicitly rooted at `world`, so Rerun applies this convention to
+its camera controls instead of falling back to its default Z-up root view.
+This setting changes the viewer convention only; it does not flip or otherwise
+transform scene data.
 
 ## Scope and future work
 

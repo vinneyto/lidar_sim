@@ -47,9 +47,9 @@ LIDAR_YAW_DEGREES = 0.0
 LIDAR_PITCH_DEGREES = 0.0
 LIDAR_ROLL_DEGREES = 0.0
 
-# Rerun turntable up direction. Canonical simulator coordinates use "+Z";
-# common camera/reconstruction coordinates may instead need "+Y" or "-Y".
-RERUN_UP_AXIS = "+Z"
+# Rerun turntable rotation axis. Canonical simulator coordinates use "+Z";
+# this reconstructed model uses "+Y" (and some exports may need "-Y").
+RERUN_UP_AXIS = "+Y"
 RERUN_AXIS_LENGTH = 1.0
 
 
