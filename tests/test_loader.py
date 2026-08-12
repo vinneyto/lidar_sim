@@ -21,9 +21,9 @@ def test_load_gaussian_scene_uses_gsply_for_sog(monkeypatch, tmp_path):
     loaded = []
     model = SimpleNamespace(
         means=[[1.0, 2.0, 3.0]],
-        scales=[[0.1, 0.2, 0.3]],
+        scales=[[-0.0001, 0.2, 0.3]],
         quats=[[2.0, 0.0, 0.0, 0.0]],
-        opacities=[[0.75]],
+        opacities=[[1.0001]],
         sh0=[[0.0, 0.0, 0.0]],
     )
     monkeypatch.setitem(
@@ -38,9 +38,9 @@ def test_load_gaussian_scene_uses_gsply_for_sog(monkeypatch, tmp_path):
 
     assert loaded == [(path, "cpu")]
     assert torch.equal(scene.means, torch.tensor([[1.0, 2.0, 3.0]]))
-    assert torch.equal(scene.scales, torch.tensor([[0.1, 0.2, 0.3]]))
+    assert torch.equal(scene.scales, torch.tensor([[1e-8, 0.2, 0.3]]))
     assert torch.equal(scene.rotations, torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
-    assert torch.equal(scene.opacities, torch.tensor([0.75]))
+    assert torch.equal(scene.opacities, torch.tensor([1.0]))
     assert torch.allclose(scene.colors, torch.tensor([[0.5, 0.5, 0.5]]))
 
 

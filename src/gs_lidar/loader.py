@@ -6,6 +6,7 @@ import torch
 from .gaussian_cloud import GaussianCloud
 
 _SH_C0 = 0.28209479177387814
+_MIN_SCALE = 1e-8
 
 
 def _tensor(value: Any, columns: int | None = None) -> torch.Tensor:
@@ -24,9 +25,9 @@ def load_gaussian_scene(path: str | Path) -> GaussianCloud:
     """Load any Gaussian-splat scene format supported by gsply.
 
     gsply presents PLY, SOG, SPLAT and its other supported encodings through a
-    normalized representation: scales are linear, opacity is in ``[0, 1]``,
-    and rotations are scalar-first quaternions.  No format-specific decoding
-    belongs in the LiDAR simulator.
+    normalized representation with linear scales and scalar-first
+    quaternions. Small quantization overshoots in scales and opacity are
+    clamped to the domain required by :class:`GaussianCloud`.
     """
     import gsply
 
@@ -36,9 +37,9 @@ def load_gaussian_scene(path: str | Path) -> GaussianCloud:
     scene = gsply.load(source, device="cpu")
 
     means = _tensor(scene.means, 3)
-    scales = _tensor(scene.scales, 3)
+    scales = _tensor(scene.scales, 3).clamp_min(_MIN_SCALE)
     rotations = _tensor(scene.quats, 4)
-    opacities = _tensor(scene.opacities).squeeze(-1)
+    opacities = _tensor(scene.opacities).squeeze(-1).clamp(0, 1)
     if opacities.ndim != 1:
         raise ValueError(f"expected an [N] gsply opacity field, got {list(opacities.shape)}")
 

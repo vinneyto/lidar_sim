@@ -26,8 +26,8 @@ uv run python experiments/02_circular_scan.py
 Scene files are decoded by
 [`gsply`](https://gsply.readthedocs.io/en/latest/), so the same API accepts PLY,
 compact SOG, and every other format supported by that library. Internally scales
-are linear, opacities are in `[0,1]`, and normalized quaternions remain
-scalar-first.
+are linear and positive, opacities are clamped to `[0,1]`, and normalized
+quaternions remain scalar-first.
 
 Coordinates are right-handed: `+X` forward, `+Y` left, `+Z` up. Azimuth is
 endpoint-exclusive, so the default `[-π, π)` scan does not duplicate its seam.
