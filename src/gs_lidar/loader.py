@@ -1,48 +1,63 @@
 from pathlib import Path
+from typing import Any
 
 import torch
 
 from .gaussian_cloud import GaussianCloud
 
+_SH_C0 = 0.28209479177387814
+_MIN_SCALE = 1e-8
+
+
+def _tensor(value: Any, columns: int | None = None) -> torch.Tensor:
+    tensor = torch.as_tensor(value).detach().clone().float()
+    if columns is not None and (tensor.ndim != 2 or tensor.shape[1] != columns):
+        raise ValueError(f"expected an [N,{columns}] gsply field, got {list(tensor.shape)}")
+    return tensor
+
+
+def _sh0_to_rgb(sh0: Any) -> torch.Tensor:
+    """Convert degree-zero spherical-harmonic coefficients to display RGB."""
+    return (0.5 + _SH_C0 * _tensor(sh0, 3)).clamp(0, 1)
+
+
+def load_gaussian_scene(path: str | Path) -> GaussianCloud:
+    """Load any Gaussian-splat scene format supported by gsply.
+
+    gsply presents PLY, SOG, SPLAT and its other supported encodings through a
+    normalized representation with linear scales and scalar-first
+    quaternions. Small quantization overshoots in scales and opacity are
+    clamped to the domain required by :class:`GaussianCloud`.
+    """
+    import gsply
+
+    source = Path(path)
+    # Pass ``device`` explicitly so type checkers select gsply's file-loading
+    # overload instead of its in-place ``load(path, gstensor, ...)`` overload.
+    scene = gsply.load(source, device="cpu")
+
+    means = _tensor(scene.means, 3)
+    scales = _tensor(scene.scales, 3).clamp_min(_MIN_SCALE)
+    rotations = _tensor(scene.quats, 4)
+    opacities = _tensor(scene.opacities).squeeze(-1).clamp(0, 1)
+    if opacities.ndim != 1:
+        raise ValueError(f"expected an [N] gsply opacity field, got {list(opacities.shape)}")
+
+    colors = None
+    if scene.sh0 is not None:
+        # GaussianCloud stores RGB for Rerun, whereas GSTensor stores the
+        # degree-zero spherical-harmonic coefficient. This does not affect
+        # LiDAR tracing; colors are visualization-only metadata.
+        colors = _sh0_to_rgb(scene.sh0)
+
+    count = means.shape[0]
+    if any(value.shape[0] != count for value in (scales, rotations, opacities)):
+        raise ValueError("gsply scene fields have inconsistent Gaussian counts")
+    if colors is not None and colors.shape[0] != count:
+        raise ValueError("gsply color field has an inconsistent Gaussian count")
+    return GaussianCloud(means, scales, rotations, opacities, colors).normalized()
+
 
 def load_gaussian_ply(path: str | Path) -> GaussianCloud:
-    """Load canonical Inria 3DGS PLY (scale logits, opacity logits, scalar-first rotation)."""
-    from plyfile import PlyData
-
-    vertex = PlyData.read(str(path))["vertex"].data
-    names = set(vertex.dtype.names or ())
-    required = {
-        "x",
-        "y",
-        "z",
-        "scale_0",
-        "scale_1",
-        "scale_2",
-        "rot_0",
-        "rot_1",
-        "rot_2",
-        "rot_3",
-        "opacity",
-    }
-    missing = required - names
-    if missing:
-        raise ValueError(
-            f"not a canonical 3DGS PLY; missing properties: {sorted(missing)}"
-        )
-
-    def tensor(columns: list[str]) -> torch.Tensor:
-        # plyfile exposes structured NumPy data; conversion is confined to this boundary.
-        return torch.stack(
-            [torch.from_numpy(vertex[c].copy()) for c in columns], -1
-        ).float()
-
-    means = tensor(["x", "y", "z"])
-    scales = tensor(["scale_0", "scale_1", "scale_2"]).exp()
-    rotations = tensor(["rot_0", "rot_1", "rot_2", "rot_3"])
-    opacities = torch.from_numpy(vertex["opacity"].copy()).float().sigmoid()
-    colors = None
-    if {"f_dc_0", "f_dc_1", "f_dc_2"} <= names:
-        colors = (
-            0.5 + 0.28209479177387814 * tensor(["f_dc_0", "f_dc_1", "f_dc_2"])
-        ).clamp(0, 1)
-    return GaussianCloud(means, scales, rotations, opacities, colors).normalized()
+    """Backward-compatible alias; prefer :func:`load_gaussian_scene`."""
+    return load_gaussian_scene(path)

@@ -1,6 +1,7 @@
 # Virtual LiDAR from 3D Gaussian Splatting
 
-An educational, PyTorch-first virtual LiDAR for canonical 3DGS PLY scenes. The
+An educational, PyTorch-first virtual LiDAR for 3D Gaussian Splatting scenes in
+any format supported by gsply. The
 computed surface is **the first point along each ray where front-to-back
 accumulated Gaussian opacity reaches a configurable threshold**. A Gaussian's
 `3σ` ellipsoid is only a finite-support/BVH approximation—not a physical surface
@@ -22,11 +23,11 @@ uv run python experiments/01_basic_scan.py
 uv run python experiments/02_circular_scan.py
 ```
 
-The PLY loader deliberately accepts the canonical Inria 3DGS convention:
-`scale_*` are log standard deviations, `opacity` is a logit, and `rot_0..3` is a
-scalar-first `(w,x,y,z)` quaternion. Missing fields cause an explicit error
-rather than guessed interpretation. Internally scales are linear, opacities are
-in `[0,1]`, and normalized quaternions remain scalar-first.
+Scene files are decoded by
+[`gsply`](https://gsply.readthedocs.io/en/latest/), so the same API accepts PLY,
+compact SOG, and every other format supported by that library. Internally scales
+are linear and positive, opacities are clamped to `[0,1]`, and normalized
+quaternions remain scalar-first.
 
 Coordinates are right-handed: `+X` forward, `+Y` left, `+Z` up. Azimuth is
 endpoint-exclusive, so the default `[-π, π)` scan does not duplicate its seam.
@@ -42,7 +43,7 @@ CLI yaw/pitch/roll are degrees composed as intrinsic Z-Y-X rotations.
 import torch
 from gs_lidar import *
 
-scene = load_gaussian_ply("scene.ply")
+scene = load_gaussian_scene("scene.sog")
 lo, hi = gaussian_aabbs(scene.means, scene.scales, scene.rotations)
 bvh = build_bvh(lo, hi)
 

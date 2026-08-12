@@ -29,14 +29,14 @@ from gs_lidar import (
     generate_rays,
     build_bvh,
     gaussian_aabbs,
-    load_gaussian_ply,
+    load_gaussian_scene,
 )
 
 # -----------------------------------------------------------------------------
 # Experiment configuration — edit these values before running the script.
 # -----------------------------------------------------------------------------
 
-PLY_PATH = Path("mug.ply")
+SCENE_PATH = Path("scene.sog")
 BACKEND = "metal"  # "cpu" or "metal"
 
 AZIMUTH_SAMPLES = 360
@@ -60,12 +60,12 @@ RERUN_UP_AXIS = "+Y"
 
 
 def load_scene(path: Path) -> GaussianCloud:
-    """Load a canonical 3DGS PLY scene."""
+    """Load a Gaussian splat scene."""
     if not path.is_file():
         raise FileNotFoundError(
-            f"PLY scene not found: {path}. Set PLY_PATH at the top of this file."
+            f"Gaussian scene not found: {path}. Set SCENE_PATH at the top of this file."
         )
-    return load_gaussian_ply(path)
+    return load_gaussian_scene(path)
 
 
 def create_bvh(scene: GaussianCloud) -> FlatBVH:
@@ -82,7 +82,7 @@ def select_device(backend: str) -> torch.device:
 
 
 def main() -> None:
-    scene = load_scene(PLY_PATH)
+    scene = load_scene(SCENE_PATH)
     bvh = create_bvh(scene)
     device = select_device(BACKEND)
     print(f"Backend: {BACKEND}; устройство: {device}")

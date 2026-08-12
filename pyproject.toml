@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Virtual LiDAR for 3D Gaussian Splatting scenes"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["torch>=2.5", "plyfile>=1.1", "rerun-sdk>=0.22"]
+dependencies = ["torch>=2.5", "gsply", "rerun-sdk>=0.22"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
