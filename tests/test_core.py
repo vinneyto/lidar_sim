@@ -144,10 +144,6 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
             self.args = args
             self.kwargs = kwargs
 
-    class Arrows3D:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
     view_coordinates = SimpleNamespace(
         RIGHT_HAND_X_UP="x-up",
         RIGHT_HAND_X_DOWN="x-down",
@@ -172,7 +168,6 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
     rerun = SimpleNamespace(
         GaussianSplats3D=GaussianSplats3D,
         Points3D=Points3D,
-        Arrows3D=Arrows3D,
         ViewCoordinates=view_coordinates,
         blueprint=SimpleNamespace(Blueprint=Blueprint, Spatial3DView=Spatial3DView),
         init=lambda *args, **kwargs: None,
@@ -189,7 +184,7 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
     )
     scan = SimpleNamespace(valid_points=lambda: torch.tensor([[4.0, 5.0, 6.0]]))
 
-    visualize(scene, pose(), scan, up_axis="-Y", axis_length=2.0)
+    visualize(scene, pose(), scan, up_axis="-Y")
 
     splats = logged["world/scene/gaussians"]
     assert splats.centers.tolist() == [[1.0, 2.0, 3.0]]
@@ -199,20 +194,7 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
     assert logged["world/lidar/returns"].kwargs["radii"] == 0.01
     assert logged["world"] == "y-down"
     assert sent_blueprints[0].view.origin == "world"
-    assert log_static["world"] and log_static["world/axes"]
-    axes = logged["world/axes"].kwargs
-    assert axes["vectors"] == [
-        [2.0, 0.0, 0.0],
-        [0.0, 2.0, 0.0],
-        [0.0, 0.0, 2.0],
-    ]
-    assert axes["labels"] == ["+X", "+Y", "+Z"]
-
-
-def test_rerun_rejects_non_positive_axis_length(monkeypatch):
-    monkeypatch.setitem(sys.modules, "rerun", SimpleNamespace())
-    with pytest.raises(ValueError, match="axis_length must be positive"):
-        visualize(None, None, None, axis_length=0)
+    assert log_static["world"]
 
 
 @pytest.mark.skipif(

@@ -16,18 +16,14 @@ def visualize(
     scan: LidarScan,
     *,
     up_axis: UpAxis = "+Y",
-    axis_length: float = 1.0,
 ) -> None:
-    """Visualize a scan with an origin axis helper and a configurable camera up axis.
+    """Visualize a scan with a configurable camera up axis.
 
     ``up_axis`` changes Rerun's world-coordinate convention, which controls the
     turntable camera without modifying the scene coordinates. The simulator's
     native convention is ``+Z`` up, while the example model uses ``+Y`` up.
     """
     import rerun as rr
-
-    if axis_length <= 0:
-        raise ValueError("axis_length must be positive")
 
     rr.init("gs-lidar", spawn=True)
 
@@ -50,21 +46,6 @@ def visualize(
     if up_axis not in view_coordinates:
         raise ValueError("up_axis must be one of +X, -X, +Y, -Y, +Z, or -Z")
     rr.log("world", view_coordinates[up_axis], static=True)
-    rr.log(
-        "world/axes",
-        rr.Arrows3D(
-            origins=[[0.0, 0.0, 0.0]] * 3,
-            vectors=[
-                [axis_length, 0.0, 0.0],
-                [0.0, axis_length, 0.0],
-                [0.0, 0.0, axis_length],
-            ],
-            colors=[[255, 0, 0], [0, 255, 0], [0, 128, 255]],
-            labels=["+X", "+Y", "+Z"],
-            radii=axis_length * 0.01,
-        ),
-        static=True,
-    )
 
     def to_numpy(tensor):
         return tensor.detach().cpu().numpy()
