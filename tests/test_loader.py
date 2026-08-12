@@ -21,12 +21,14 @@ def test_load_gaussian_scene_uses_gsply_for_sog(monkeypatch, tmp_path):
     monkeypatch.setitem(
         sys.modules,
         "gsply",
-        SimpleNamespace(load=lambda source: loaded.append(source) or model),
+        SimpleNamespace(
+            load=lambda source, *, device: loaded.append((source, device)) or model
+        ),
     )
 
     scene = load_gaussian_scene(path)
 
-    assert loaded == [path]
+    assert loaded == [(path, "cpu")]
     assert torch.equal(scene.means, torch.tensor([[1.0, 2.0, 3.0]]))
     assert torch.equal(scene.scales, torch.tensor([[0.1, 0.2, 0.3]]))
     assert torch.equal(scene.rotations, torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
@@ -41,7 +43,9 @@ def test_load_gaussian_scene_accepts_mapping_and_checks_counts(monkeypatch):
         "rotations": [[1.0, 0.0, 0.0, 0.0]],
         "opacities": [1.0],
     }
-    monkeypatch.setitem(sys.modules, "gsply", SimpleNamespace(load=lambda _: model))
+    monkeypatch.setitem(
+        sys.modules, "gsply", SimpleNamespace(load=lambda _, *, device: model)
+    )
 
     with pytest.raises(ValueError, match="inconsistent Gaussian counts"):
         load_gaussian_scene("broken.splat")
@@ -54,6 +58,8 @@ def test_old_ply_loader_is_a_compatible_alias(monkeypatch):
         "quaternions": [[1.0, 0.0, 0.0, 0.0]],
         "opacities": [0.5],
     }
-    monkeypatch.setitem(sys.modules, "gsply", SimpleNamespace(load=lambda _: model))
+    monkeypatch.setitem(
+        sys.modules, "gsply", SimpleNamespace(load=lambda _, *, device: model)
+    )
 
     assert torch.equal(load_gaussian_ply("legacy.ply").means, torch.zeros(1, 3))

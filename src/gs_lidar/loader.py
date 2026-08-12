@@ -35,7 +35,9 @@ def load_gaussian_scene(path: str | Path) -> GaussianCloud:
     import gsply
 
     source = Path(path)
-    scene = gsply.load(source)
+    # Pass ``device`` explicitly so type checkers select gsply's file-loading
+    # overload instead of its in-place ``load(path, gstensor, ...)`` overload.
+    scene = gsply.load(source, device="cpu")
 
     means = _tensor(_field(scene, "means", "positions"), 3)
     scales = _tensor(_field(scene, "scales"), 3)
