@@ -77,6 +77,12 @@ the `scan` timeline. Because this reconstructed scene is Y-up, the experiment
 also rotates the simulator's native Z-up scan pattern so its azimuth plane is
 parallel to the XZ tabletop/orbit plane.
 
+For diagnosing backend instability, every run also writes
+`circular_scan_debug.jsonl`. It contains the exact pose, hit and overflow
+counts, output fingerprints, range/alpha summaries, per-elevation-row hit
+counts, and differences from the preceding scan. Attach this file when
+reporting alternating or otherwise inconsistent frames.
+
 ## Scope and future work
 
 This ray-space opacity threshold differs from camera rasterization and is not a

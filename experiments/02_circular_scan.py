@@ -9,7 +9,11 @@ plane. Every pose and its return cloud is recorded on Rerun's
 ``scan`` timeline, so the timeline controls can be used to inspect the motion.
 """
 
+import hashlib
+import json
 import math
+import platform
+import sys
 import time
 from pathlib import Path
 
@@ -20,6 +24,7 @@ from gs_lidar import (
     GaussianCloud,
     LidarConfig,
     LidarPose,
+    LidarScan,
     LidarSimulator,
     build_bvh,
     gaussian_aabbs,
@@ -46,6 +51,7 @@ ANGULAR_VELOCITY_DEGREES_PER_SECOND = 5.0
 STEP_SECONDS = 0.1
 NUMBER_OF_STEPS = 360
 RING_SAMPLES = 256
+DEBUG_LOG_PATH = Path("circular_scan_debug.jsonl")
 
 # Rerun turntable rotation axis. Canonical simulator coordinates use "+Z";
 # this reconstructed model uses "+Y" (and some exports may need "-Y").
@@ -201,6 +207,98 @@ def log_scan(step: int, pose: LidarPose, points: torch.Tensor) -> None:
     )
 
 
+def tensor_digest(tensor: torch.Tensor) -> str:
+    """Return a compact, deterministic fingerprint of a CPU tensor."""
+    return hashlib.sha256(tensor.contiguous().numpy().tobytes()).hexdigest()[:16]
+
+
+def scan_diagnostics(
+    step: int,
+    pose: LidarPose,
+    scan: LidarScan,
+    previous: dict[str, torch.Tensor] | None,
+) -> tuple[dict[str, object], dict[str, torch.Tensor]]:
+    """Collect enough CPU-side data to diagnose unstable repeated scans."""
+    hit_mask = scan.hit_mask.detach().cpu()
+    ranges = scan.ranges.detach().cpu()
+    gaussian_ids = scan.gaussian_ids.detach().cpu()
+    alpha = scan.accumulated_alpha.detach().cpu()
+    valid_ranges = ranges[hit_mask]
+    valid_alpha = alpha[torch.isfinite(alpha)]
+
+    record: dict[str, object] = {
+        "step": step,
+        "position": pose.position.detach().cpu().tolist(),
+        "orientation_wxyz": pose.orientation.detach().cpu().tolist(),
+        "hits": int(hit_mask.sum()),
+        "candidate_overflows": (
+            int(scan.candidate_overflow_count.detach().cpu().item())
+            if scan.candidate_overflow_count is not None
+            else None
+        ),
+        "stack_overflows": (
+            int(scan.bvh_stack_overflow_count.detach().cpu().item())
+            if scan.bvh_stack_overflow_count is not None
+            else None
+        ),
+        "hit_mask_digest": tensor_digest(hit_mask),
+        "range_digest": tensor_digest(ranges),
+        "gaussian_id_digest": tensor_digest(gaussian_ids),
+        "hits_per_elevation_row": hit_mask.sum(dim=1).tolist(),
+        "range_min_mean_max": (
+            [
+                float(valid_ranges.min()),
+                float(valid_ranges.mean()),
+                float(valid_ranges.max()),
+            ]
+            if valid_ranges.numel()
+            else None
+        ),
+        "alpha_min_mean_max": (
+            [
+                float(valid_alpha.min()),
+                float(valid_alpha.mean()),
+                float(valid_alpha.max()),
+            ]
+            if valid_alpha.numel()
+            else None
+        ),
+    }
+    current = {"hit_mask": hit_mask, "ranges": ranges, "ids": gaussian_ids}
+    if previous is not None:
+        common_hits = hit_mask & previous["hit_mask"]
+        record["changed_hit_masks"] = int((hit_mask != previous["hit_mask"]).sum())
+        record["changed_gaussian_ids"] = int(
+            (gaussian_ids != previous["ids"]).sum()
+        )
+        record["common_hit_range_abs_max"] = (
+            float((ranges[common_hits] - previous["ranges"][common_hits]).abs().max())
+            if common_hits.any()
+            else None
+        )
+    return record, current
+
+
+def write_debug_header(scene: GaussianCloud, config: LidarConfig) -> None:
+    """Start a machine-readable diagnostic log that can be shared verbatim."""
+    header = {
+        "kind": "configuration",
+        "backend": BACKEND,
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "torch_version": torch.__version__,
+        "mps_available": torch.backends.mps.is_available(),
+        "gaussians": scene.means.shape[0],
+        "azimuth_samples": config.azimuth_samples,
+        "elevation_samples": config.elevation_samples,
+        "near": config.near,
+        "far": config.far,
+        "sigma_cutoff": config.gaussian_sigma_cutoff,
+        "alpha_threshold": config.accumulated_alpha_threshold,
+    }
+    DEBUG_LOG_PATH.write_text(json.dumps(header) + "\n")
+
+
 def run_experiment() -> None:
     """Build the static scene once, then scan at every point on the orbit."""
     if ORBIT_RADIUS <= 0 or STEP_SECONDS <= 0 or NUMBER_OF_STEPS < 1:
@@ -214,8 +312,10 @@ def run_experiment() -> None:
     scene, bvh = scene_cpu.to(device), bvh_cpu.to(device)
     simulator = LidarSimulator(scene, bvh, BACKEND)
     config = create_config()
+    write_debug_header(scene_cpu, config)
     orientation = lidar_orientation(device)
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
+    previous_diagnostics = None
 
     for step in range(NUMBER_OF_STEPS):
         angle = angular_velocity * STEP_SECONDS * step
@@ -223,10 +323,23 @@ def run_experiment() -> None:
         scan = simulator.scan(pose, config)
         if device.type == "mps":
             torch.mps.synchronize()
+        diagnostics, previous_diagnostics = scan_diagnostics(
+            step, pose, scan, previous_diagnostics
+        )
+        with DEBUG_LOG_PATH.open("a") as debug_log:
+            debug_log.write(json.dumps(diagnostics) + "\n")
         log_scan(step, pose, scan.valid_points())
-        print(f"Scan {step + 1}/{NUMBER_OF_STEPS}: {int(scan.hit_mask.sum().cpu())} hits")
+        print(
+            f"Scan {step + 1}/{NUMBER_OF_STEPS}: {diagnostics['hits']} hits; "
+            f"candidate_overflows={diagnostics['candidate_overflows']}; "
+            f"stack_overflows={diagnostics['stack_overflows']}; "
+            f"mask={diagnostics['hit_mask_digest']}; "
+            f"ranges={diagnostics['range_digest']}"
+        )
         if step + 1 < NUMBER_OF_STEPS:
             time.sleep(STEP_SECONDS)
+
+    print(f"Diagnostic log: {DEBUG_LOG_PATH.resolve()}")
 
 
 if __name__ == "__main__":

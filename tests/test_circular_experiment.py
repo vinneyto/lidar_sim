@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from gs_lidar import LidarConfig, LidarPose, generate_rays
@@ -95,3 +96,35 @@ def test_log_scan_uses_current_rerun_timeline_api(monkeypatch):
         "world/lidar/position",
         "world/lidar/returns",
     ]
+
+
+def test_scan_diagnostics_reports_changes_and_overflows():
+    pose = circular_scan.LidarPose(
+        torch.zeros(3), torch.tensor([1.0, 0.0, 0.0, 0.0])
+    )
+    first = SimpleNamespace(
+        hit_mask=torch.tensor([[True, False]]),
+        ranges=torch.tensor([[1.0, float("inf")]]),
+        gaussian_ids=torch.tensor([[3, -1]]),
+        accumulated_alpha=torch.tensor([[0.6, 0.1]]),
+        candidate_overflow_count=torch.tensor([2]),
+        bvh_stack_overflow_count=torch.tensor([1]),
+    )
+    second = SimpleNamespace(
+        hit_mask=torch.tensor([[True, True]]),
+        ranges=torch.tensor([[1.25, 2.0]]),
+        gaussian_ids=torch.tensor([[4, 5]]),
+        accumulated_alpha=torch.tensor([[0.7, 0.8]]),
+        candidate_overflow_count=torch.tensor([0]),
+        bvh_stack_overflow_count=torch.tensor([0]),
+    )
+
+    first_record, previous = circular_scan.scan_diagnostics(0, pose, first, None)
+    second_record, _ = circular_scan.scan_diagnostics(1, pose, second, previous)
+
+    assert first_record["candidate_overflows"] == 2
+    assert first_record["stack_overflows"] == 1
+    assert first_record["hits_per_elevation_row"] == [1]
+    assert second_record["changed_hit_masks"] == 1
+    assert second_record["changed_gaussian_ids"] == 2
+    assert second_record["common_hit_range_abs_max"] == pytest.approx(0.25)

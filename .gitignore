@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 dist/
 *.egg-info/
+circular_scan_debug.jsonl
