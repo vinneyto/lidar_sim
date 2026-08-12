@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run a basic virtual LiDAR experiment.
 
 Edit the constants in the configuration section below, then run:
@@ -9,10 +8,10 @@ Angles are specified in degrees. The pose uses intrinsic Z-Y-X
 (yaw-pitch-roll) rotations in the +X forward, +Y left, +Z up frame.
 """
 
-from dataclasses import dataclass
 import math
-from pathlib import Path
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 
@@ -29,12 +28,11 @@ from gs_lidar import (
 )
 from gs_lidar.rerun_viewer import visualize
 
-
 # -----------------------------------------------------------------------------
 # Experiment configuration — edit these values before running the script.
 # -----------------------------------------------------------------------------
 
-PLY_PATH = Path("scene.ply")
+PLY_PATH = Path("mug.ply")
 BACKEND = "metal"  # "cpu" or "metal"
 
 AZIMUTH_SAMPLES = 360
@@ -188,9 +186,11 @@ def print_statistics(
     print(f"Device upload: {timings.device_upload_seconds:.3f} s")
     print(f"Trace: {timings.trace_seconds:.3f} s ({mrays_per_second:.3f} MRays/s)")
 
-    if scan.candidate_overflow_count is not None:
-        candidate_overflows = int(scan.candidate_overflow_count.cpu())
-        stack_overflows = int(scan.bvh_stack_overflow_count.cpu())
+    candidate_overflow_count = scan.candidate_overflow_count
+    stack_overflow_count = scan.bvh_stack_overflow_count
+    if candidate_overflow_count is not None and stack_overflow_count is not None:
+        candidate_overflows = int(candidate_overflow_count.cpu())
+        stack_overflows = int(stack_overflow_count.cpu())
         print(f"Candidate overflows: {candidate_overflows}")
         print(f"BVH stack overflows: {stack_overflows}")
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, replace
+
 import torch
 
 
@@ -13,7 +15,7 @@ class FlatBVH:
     primitive_count: torch.Tensor
     primitive_indices: torch.Tensor
 
-    def to(self, device: torch.device | str) -> "FlatBVH":
+    def to(self, device: torch.device | str) -> FlatBVH:
         return replace(self, **{k: v.to(device) for k, v in self.__dict__.items()})
 
 

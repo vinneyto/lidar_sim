@@ -1,4 +1,5 @@
 import torch
+
 from .bvh import FlatBVH, bvh_candidates
 from .gaussian_cloud import GaussianCloud
 from .gaussian_geometry import ray_gaussian_peaks
@@ -30,13 +31,14 @@ class CpuLidarTracer:
         accumulated = torch.zeros(count, dtype=origins.dtype)
         all_ids = torch.arange(scene.means.shape[0])
         for ray in range(count):
-            candidates = (
-                bvh_candidates(
+            if self.use_bvh:
+                # The validation above guarantees this for the BVH code path.
+                assert bvh is not None
+                candidates = bvh_candidates(
                     bvh, origins[ray], directions[ray], config.near, config.far
                 )
-                if self.use_bvh
-                else all_ids
-            )
+            else:
+                candidates = all_ids
             if candidates.numel() == 0:
                 continue
             t, q = ray_gaussian_peaks(
