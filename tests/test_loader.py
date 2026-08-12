@@ -12,11 +12,11 @@ def test_load_gaussian_scene_uses_gsply_for_sog(monkeypatch, tmp_path):
     path.write_bytes(b"compact scene")
     loaded = []
     model = SimpleNamespace(
-        positions=[[1.0, 2.0, 3.0]],
+        means=[[1.0, 2.0, 3.0]],
         scales=[[0.1, 0.2, 0.3]],
-        quaternions=[[2.0, 0.0, 0.0, 0.0]],
-        opacity=[[0.75]],
-        colors=[[0.2, 0.4, 0.6]],
+        quats=[[2.0, 0.0, 0.0, 0.0]],
+        opacities=[[0.75]],
+        sh0=[[0.0, 0.0, 0.0]],
     )
     monkeypatch.setitem(
         sys.modules,
@@ -33,16 +33,17 @@ def test_load_gaussian_scene_uses_gsply_for_sog(monkeypatch, tmp_path):
     assert torch.equal(scene.scales, torch.tensor([[0.1, 0.2, 0.3]]))
     assert torch.equal(scene.rotations, torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
     assert torch.equal(scene.opacities, torch.tensor([0.75]))
-    assert torch.allclose(scene.colors, torch.tensor([[0.2, 0.4, 0.6]]))
+    assert torch.allclose(scene.colors, torch.tensor([[0.5, 0.5, 0.5]]))
 
 
-def test_load_gaussian_scene_accepts_mapping_and_checks_counts(monkeypatch):
-    model = {
-        "means": [[0.0, 0.0, 0.0]],
-        "scales": [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]],
-        "rotations": [[1.0, 0.0, 0.0, 0.0]],
-        "opacities": [1.0],
-    }
+def test_load_gaussian_scene_checks_counts(monkeypatch):
+    model = SimpleNamespace(
+        means=[[0.0, 0.0, 0.0]],
+        scales=[[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]],
+        quats=[[1.0, 0.0, 0.0, 0.0]],
+        opacities=[1.0],
+        sh0=None,
+    )
     monkeypatch.setitem(
         sys.modules, "gsply", SimpleNamespace(load=lambda _, *, device: model)
     )
@@ -52,12 +53,13 @@ def test_load_gaussian_scene_accepts_mapping_and_checks_counts(monkeypatch):
 
 
 def test_old_ply_loader_is_a_compatible_alias(monkeypatch):
-    model = {
-        "positions": [[0.0, 0.0, 0.0]],
-        "scales": [[1.0, 1.0, 1.0]],
-        "quaternions": [[1.0, 0.0, 0.0, 0.0]],
-        "opacities": [0.5],
-    }
+    model = SimpleNamespace(
+        means=[[0.0, 0.0, 0.0]],
+        scales=[[1.0, 1.0, 1.0]],
+        quats=[[1.0, 0.0, 0.0, 0.0]],
+        opacities=[0.5],
+        sh0=None,
+    )
     monkeypatch.setitem(
         sys.modules, "gsply", SimpleNamespace(load=lambda _, *, device: model)
     )
