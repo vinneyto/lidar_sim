@@ -5,12 +5,19 @@ import torch
 
 from .gaussian_cloud import GaussianCloud
 
+_SH_C0 = 0.28209479177387814
+
 
 def _tensor(value: Any, columns: int | None = None) -> torch.Tensor:
     tensor = torch.as_tensor(value).detach().clone().float()
     if columns is not None and (tensor.ndim != 2 or tensor.shape[1] != columns):
         raise ValueError(f"expected an [N,{columns}] gsply field, got {list(tensor.shape)}")
     return tensor
+
+
+def _sh0_to_rgb(sh0: Any) -> torch.Tensor:
+    """Convert degree-zero spherical-harmonic coefficients to display RGB."""
+    return (0.5 + _SH_C0 * _tensor(sh0, 3)).clamp(0, 1)
 
 
 def load_gaussian_scene(path: str | Path) -> GaussianCloud:
@@ -37,7 +44,10 @@ def load_gaussian_scene(path: str | Path) -> GaussianCloud:
 
     colors = None
     if scene.sh0 is not None:
-        colors = (0.5 + 0.28209479177387814 * _tensor(scene.sh0, 3)).clamp(0, 1)
+        # GaussianCloud stores RGB for Rerun, whereas GSTensor stores the
+        # degree-zero spherical-harmonic coefficient. This does not affect
+        # LiDAR tracing; colors are visualization-only metadata.
+        colors = _sh0_to_rgb(scene.sh0)
 
     count = means.shape[0]
     if any(value.shape[0] != count for value in (scales, rotations, opacities)):

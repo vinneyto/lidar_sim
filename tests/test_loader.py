@@ -5,6 +5,14 @@ import pytest
 import torch
 
 from gs_lidar import load_gaussian_ply, load_gaussian_scene
+from gs_lidar.loader import _sh0_to_rgb
+
+
+def test_sh0_is_converted_to_display_rgb():
+    assert torch.allclose(
+        _sh0_to_rgb([[0.0, 1.0, -1.0]]),
+        torch.tensor([[0.5, 0.7820948, 0.2179052]]),
+    )
 
 
 def test_load_gaussian_scene_uses_gsply_for_sog(monkeypatch, tmp_path):
