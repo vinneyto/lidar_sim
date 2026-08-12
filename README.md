@@ -59,6 +59,11 @@ point, `false` mask, and Gaussian ID `-1`.
 Rerun is isolated in `rerun_viewer.py`; only visualization copies tensors to
 CPU/NumPy. Scene Gaussians are rendered with Rerun's native Gaussian splat
 archetype, including their anisotropic scales, rotations, colors, and opacities.
+The viewer logs a red/green/blue `+X`/`+Y`/`+Z` axis helper at the world origin.
+Set `RERUN_UP_AXIS` in the experiment to `+X`, `-X`, `+Y`, `-Y`, `+Z`, or `-Z`
+to match a reconstructed model's coordinate convention and make Rerun's
+turntable camera orbit with the intended side facing up. This setting changes
+the viewer convention only; it does not flip or otherwise transform scene data.
 
 ## Scope and future work
 

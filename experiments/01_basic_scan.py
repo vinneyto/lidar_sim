@@ -47,6 +47,11 @@ LIDAR_YAW_DEGREES = 0.0
 LIDAR_PITCH_DEGREES = 0.0
 LIDAR_ROLL_DEGREES = 0.0
 
+# Rerun turntable up direction. Canonical simulator coordinates use "+Z";
+# common camera/reconstruction coordinates may instead need "+Y" or "-Y".
+RERUN_UP_AXIS = "+Z"
+RERUN_AXIS_LENGTH = 1.0
+
 
 @dataclass(frozen=True)
 class ExperimentTimings:
@@ -223,7 +228,13 @@ def run_experiment() -> None:
         trace_seconds=scan_finished - data_uploaded,
     )
     print_statistics(scene, bvh, scan, timings)
-    visualize(scene, pose, scan)
+    visualize(
+        scene,
+        pose,
+        scan,
+        up_axis=RERUN_UP_AXIS,
+        axis_length=RERUN_AXIS_LENGTH,
+    )
 
 
 if __name__ == "__main__":

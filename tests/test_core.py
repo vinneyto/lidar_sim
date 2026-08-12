@@ -129,6 +129,7 @@ def test_rotated_anisotropic_peak():
 
 def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
     logged = {}
+    log_static = {}
 
     class GaussianSplats3D:
         def __init__(self, centers, *, scales, quaternions, colors):
@@ -142,11 +143,30 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
             self.args = args
             self.kwargs = kwargs
 
+    class Arrows3D:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    view_coordinates = SimpleNamespace(
+        RIGHT_HAND_X_UP="x-up",
+        RIGHT_HAND_X_DOWN="x-down",
+        RIGHT_HAND_Y_UP="y-up",
+        RIGHT_HAND_Y_DOWN="y-down",
+        RIGHT_HAND_Z_UP="z-up",
+        RIGHT_HAND_Z_DOWN="z-down",
+    )
+
+    def log(path, value, *, static=False):
+        logged[path] = value
+        log_static[path] = static
+
     rerun = SimpleNamespace(
         GaussianSplats3D=GaussianSplats3D,
         Points3D=Points3D,
+        Arrows3D=Arrows3D,
+        ViewCoordinates=view_coordinates,
         init=lambda *args, **kwargs: None,
-        log=lambda path, value: logged.__setitem__(path, value),
+        log=log,
     )
     monkeypatch.setitem(sys.modules, "rerun", rerun)
     scene = GaussianCloud(
@@ -158,14 +178,29 @@ def test_rerun_visualizes_native_gaussian_splats(monkeypatch):
     )
     scan = SimpleNamespace(valid_points=lambda: torch.tensor([[4.0, 5.0, 6.0]]))
 
-    visualize(scene, pose(), scan)
+    visualize(scene, pose(), scan, up_axis="-Y", axis_length=2.0)
 
-    splats = logged["scene/gaussians"]
+    splats = logged["world/scene/gaussians"]
     assert splats.centers.tolist() == [[1.0, 2.0, 3.0]]
     assert splats.scales.tolist() == [[0.5, 1.0, 1.5]]
     assert splats.quaternions.tolist() == pytest.approx([[0.1, 0.2, 0.3, 0.5]])
     assert splats.colors.tolist() == [[255, 63, 0, 127]]
-    assert logged["lidar/returns"].kwargs["radii"] == 0.01
+    assert logged["world/lidar/returns"].kwargs["radii"] == 0.01
+    assert logged["world"] == "y-down"
+    assert log_static["world"] and log_static["world/axes"]
+    axes = logged["world/axes"].kwargs
+    assert axes["vectors"] == [
+        [2.0, 0.0, 0.0],
+        [0.0, 2.0, 0.0],
+        [0.0, 0.0, 2.0],
+    ]
+    assert axes["labels"] == ["+X", "+Y", "+Z"]
+
+
+def test_rerun_rejects_non_positive_axis_length(monkeypatch):
+    monkeypatch.setitem(sys.modules, "rerun", SimpleNamespace())
+    with pytest.raises(ValueError, match="axis_length must be positive"):
+        visualize(None, None, None, axis_length=0)
 
 
 @pytest.mark.skipif(
