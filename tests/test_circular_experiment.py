@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import torch
 
+from gs_lidar import LidarConfig, LidarPose, generate_rays
+
 
 EXPERIMENT_PATH = (
     Path(__file__).parents[1] / "experiments" / "02_circular_scan.py"
@@ -38,6 +40,30 @@ def test_orbit_polyline_is_closed():
 
     assert points.shape == (circular_scan.RING_SAMPLES + 1, 3)
     torch.testing.assert_close(points[0], points[-1], atol=1e-6, rtol=0)
+
+
+def test_lidar_azimuth_plane_matches_xz_orbit_plane():
+    pose = LidarPose(
+        torch.zeros(3), circular_scan.lidar_orientation(torch.device("cpu"))
+    )
+    config = LidarConfig(
+        azimuth_min=0,
+        azimuth_max=2 * math.pi,
+        elevation_min=0,
+        elevation_max=0,
+        azimuth_samples=4,
+        elevation_samples=1,
+    )
+
+    _, directions = generate_rays(pose, config)
+
+    torch.testing.assert_close(directions[:, 1], torch.zeros(4), atol=1e-6, rtol=0)
+    torch.testing.assert_close(
+        directions,
+        torch.tensor([[1.0, 0, 0], [0, 0, -1.0], [-1.0, 0, 0], [0, 0, 1.0]]),
+        atol=1e-6,
+        rtol=0,
+    )
 
 
 def test_log_scan_uses_current_rerun_timeline_api(monkeypatch):

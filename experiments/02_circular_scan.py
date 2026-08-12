@@ -103,6 +103,22 @@ def orbit_points() -> torch.Tensor:
     return points
 
 
+def lidar_orientation(device: torch.device) -> torch.Tensor:
+    """Align the scanner's elevation axis with this scene's +Y up axis.
+
+    Ray generation is natively Z-up. A -90 degree rotation around X maps the
+    local XY azimuth plane onto the scene's XZ tabletop plane and local +Z onto
+    world +Y. Without this rotation, the orbit and the scan pattern disagree
+    about which direction is up, producing alternating misses and dense bands.
+    """
+    half_angle = -math.pi / 4
+    return torch.tensor(
+        [math.cos(half_angle), math.sin(half_angle), 0.0, 0.0],
+        dtype=torch.float32,
+        device=device,
+    )
+
+
 def create_config() -> LidarConfig:
     return LidarConfig(
         azimuth_samples=AZIMUTH_SAMPLES,
@@ -198,7 +214,7 @@ def run_experiment() -> None:
     scene, bvh = scene_cpu.to(device), bvh_cpu.to(device)
     simulator = LidarSimulator(scene, bvh, BACKEND)
     config = create_config()
-    orientation = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)
+    orientation = lidar_orientation(device)
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
 
     for step in range(NUMBER_OF_STEPS):

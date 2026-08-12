@@ -73,7 +73,9 @@ The second experiment uses a fixed one-meter orbit in the XZ plane, centered at
 the coordinate origin. Its angular velocity, update interval, and number of
 scans are constants at the top of `experiments/02_circular_scan.py`. Rerun shows
 the path as a thin ring and records every sensor position and return cloud on
-the `scan` timeline.
+the `scan` timeline. Because this reconstructed scene is Y-up, the experiment
+also rotates the simulator's native Z-up scan pattern so its azimuth plane is
+parallel to the XZ tabletop/orbit plane.
 
 ## Scope and future work
 
