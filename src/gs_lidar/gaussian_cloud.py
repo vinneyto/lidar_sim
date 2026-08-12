@@ -23,12 +23,19 @@ class GaussianCloud:
         tensors = (self.means, self.scales, self.rotations, self.opacities)
         if len({x.device for x in tensors}) != 1:
             raise ValueError("all tensors must share a device")
-        if bool((self.scales <= 0).any()) or bool(((self.opacities < 0) | (self.opacities > 1)).any()):
+        if bool((self.scales <= 0).any()) or bool(
+            ((self.opacities < 0) | (self.opacities > 1)).any()
+        ):
             raise ValueError("scales must be positive and opacities must be in [0, 1]")
 
     def to(self, device: torch.device | str) -> "GaussianCloud":
-        values = {k: (v.to(device) if v is not None else None) for k, v in self.__dict__.items()}
+        values = {
+            k: (v.to(device) if v is not None else None)
+            for k, v in self.__dict__.items()
+        }
         return replace(self, **values)
 
     def normalized(self) -> "GaussianCloud":
-        return replace(self, rotations=torch.nn.functional.normalize(self.rotations, dim=-1))
+        return replace(
+            self, rotations=torch.nn.functional.normalize(self.rotations, dim=-1)
+        )

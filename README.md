@@ -16,9 +16,8 @@ tensors and dispatches a custom shader compiled with
 ```bash
 uv sync --extra test
 uv run pytest
-uv run python experiments/01_basic_scan.py scene.ply --backend cpu \
-  --azimuth-samples 90 --elevation-samples 30
-uv run python experiments/01_basic_scan.py scene.ply --backend metal
+# Edit the constants at the top of experiments/01_basic_scan.py, then run:
+uv run python experiments/01_basic_scan.py
 ```
 
 The PLY loader deliberately accepts the canonical Inria 3DGS convention:

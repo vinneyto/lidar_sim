@@ -27,18 +27,36 @@ class LidarConfig:
     accumulated_alpha_threshold: float = 0.5
 
     def __post_init__(self) -> None:
-        if self.azimuth_samples < 1 or self.elevation_samples < 1 or self.near < 0 or self.far <= self.near:
+        if (
+            self.azimuth_samples < 1
+            or self.elevation_samples < 1
+            or self.near < 0
+            or self.far <= self.near
+        ):
             raise ValueError("invalid sample count or range")
         if not 0 < self.accumulated_alpha_threshold <= 1:
             raise ValueError("alpha threshold must be in (0, 1]")
 
 
-def generate_rays(pose: LidarPose, config: LidarConfig) -> tuple[torch.Tensor, torch.Tensor]:
+def generate_rays(
+    pose: LidarPose, config: LidarConfig
+) -> tuple[torch.Tensor, torch.Tensor]:
     device, dtype = pose.position.device, pose.position.dtype
     az = torch.arange(config.azimuth_samples, device=device, dtype=dtype)
-    az = config.azimuth_min + az * ((config.azimuth_max-config.azimuth_min)/config.azimuth_samples)
-    el = torch.linspace(config.elevation_min, config.elevation_max, config.elevation_samples, device=device, dtype=dtype)
+    az = config.azimuth_min + az * (
+        (config.azimuth_max - config.azimuth_min) / config.azimuth_samples
+    )
+    el = torch.linspace(
+        config.elevation_min,
+        config.elevation_max,
+        config.elevation_samples,
+        device=device,
+        dtype=dtype,
+    )
     eg, ag = torch.meshgrid(el, az, indexing="ij")
-    local = torch.stack((torch.cos(eg)*torch.cos(ag), torch.cos(eg)*torch.sin(ag), torch.sin(eg)), -1)
+    local = torch.stack(
+        (torch.cos(eg) * torch.cos(ag), torch.cos(eg) * torch.sin(ag), torch.sin(eg)),
+        -1,
+    )
     world = local.reshape(-1, 3) @ quaternion_to_matrix(pose.orientation).T
     return pose.position.expand_as(world), world
