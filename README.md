@@ -57,8 +57,8 @@ counters in `LidarScan`; overflow is never silent. Misses use `inf` range, `nan`
 point, `false` mask, and Gaussian ID `-1`.
 
 Rerun is isolated in `rerun_viewer.py`; only visualization copies tensors to
-CPU/NumPy. Current visualization uses stable point primitives as a fallback for
-version-dependent Gaussian splat APIs.
+CPU/NumPy. Scene Gaussians are rendered with Rerun's native Gaussian splat
+archetype, including their anisotropic scales, rotations, colors, and opacities.
 
 ## Scope and future work
 
