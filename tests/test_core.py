@@ -65,6 +65,14 @@ def test_coordinate_convention_and_seam():
     )
 
 
+def test_generated_ray_origins_are_an_expanded_view():
+    ray_config = LidarConfig(azimuth_samples=4, elevation_samples=2)
+    origins, _ = generate_rays(pose(), ray_config)
+
+    assert origins.stride(0) == 0
+    assert origins.contiguous().stride(0) == 3
+
+
 def test_cumulative_opacity_and_storage_order():
     scene = cloud([4.90, 5, 5.08], [0.2, 0.25, 0.3])
     lo, hi = gaussian_aabbs(scene.means, scene.scales, scene.rotations)

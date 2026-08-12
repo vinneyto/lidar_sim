@@ -18,6 +18,8 @@ uv sync --extra test
 uv run pytest
 # Edit the constants at the top of experiments/01_basic_scan.py, then run:
 uv run python experiments/01_basic_scan.py
+# Or animate repeated scans while the LiDAR follows an XZ-plane circle:
+uv run python experiments/02_circular_scan.py
 ```
 
 The PLY loader deliberately accepts the canonical Inria 3DGS convention:
@@ -66,6 +68,20 @@ turntable camera orbit around that axis (the example defaults to `+Y`). The
 its camera controls instead of falling back to its default Z-up root view.
 This setting changes the viewer convention only; it does not flip or otherwise
 transform scene data.
+
+The second experiment uses a fixed one-meter orbit in the XZ plane, centered at
+the coordinate origin. Its angular velocity, update interval, and number of
+scans are constants at the top of `experiments/02_circular_scan.py`. Rerun shows
+the path as a thin ring and records every sensor position and return cloud on
+the `scan` timeline. Because this reconstructed scene is Y-up, the experiment
+also rotates the simulator's native Z-up scan pattern so its azimuth plane is
+parallel to the XZ tabletop/orbit plane.
+
+For diagnosing backend instability, every run also writes
+`circular_scan_debug.jsonl`. It contains the exact pose, hit and overflow
+counts, output fingerprints, range/alpha summaries, per-elevation-row hit
+counts, and differences from the preceding scan. Attach this file when
+reporting alternating or otherwise inconsistent frames.
 
 ## Scope and future work
 
