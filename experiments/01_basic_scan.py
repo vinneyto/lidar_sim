@@ -188,9 +188,11 @@ def print_statistics(
     print(f"Device upload: {timings.device_upload_seconds:.3f} s")
     print(f"Trace: {timings.trace_seconds:.3f} s ({mrays_per_second:.3f} MRays/s)")
 
-    if scan.candidate_overflow_count is not None:
-        candidate_overflows = int(scan.candidate_overflow_count.cpu())
-        stack_overflows = int(scan.bvh_stack_overflow_count.cpu())
+    candidate_overflow_count = scan.candidate_overflow_count
+    stack_overflow_count = scan.bvh_stack_overflow_count
+    if candidate_overflow_count is not None and stack_overflow_count is not None:
+        candidate_overflows = int(candidate_overflow_count.cpu())
+        stack_overflows = int(stack_overflow_count.cpu())
         print(f"Candidate overflows: {candidate_overflows}")
         print(f"BVH stack overflows: {stack_overflows}")
 
