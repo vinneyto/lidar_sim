@@ -1,6 +1,8 @@
 import math
+
 import pytest
 import torch
+
 from gs_lidar import (
     CpuLidarTracer,
     GaussianCloud,

@@ -1,6 +1,8 @@
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
+
 import torch
+
 from .gaussian_geometry import quaternion_to_matrix
 
 

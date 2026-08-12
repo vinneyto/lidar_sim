@@ -1,5 +1,7 @@
 from pathlib import Path
+
 import torch
+
 from .gaussian_cloud import GaussianCloud
 
 

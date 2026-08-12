@@ -1,4 +1,5 @@
 import torch
+
 from .bvh import FlatBVH, bvh_candidates
 from .gaussian_cloud import GaussianCloud
 from .gaussian_geometry import ray_gaussian_peaks

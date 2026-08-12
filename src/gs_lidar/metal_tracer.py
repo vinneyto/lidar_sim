@@ -1,5 +1,7 @@
 from importlib.resources import files
+
 import torch
+
 from .bvh import FlatBVH
 from .gaussian_cloud import GaussianCloud
 from .lidar import LidarConfig, LidarPose, generate_rays

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+
 import torch
 
 
@@ -28,14 +29,14 @@ class GaussianCloud:
         ):
             raise ValueError("scales must be positive and opacities must be in [0, 1]")
 
-    def to(self, device: torch.device | str) -> "GaussianCloud":
+    def to(self, device: torch.device | str) -> GaussianCloud:
         values = {
             k: (v.to(device) if v is not None else None)
             for k, v in self.__dict__.items()
         }
         return replace(self, **values)
 
-    def normalized(self) -> "GaussianCloud":
+    def normalized(self) -> GaussianCloud:
         return replace(
             self, rotations=torch.nn.functional.normalize(self.rotations, dim=-1)
         )

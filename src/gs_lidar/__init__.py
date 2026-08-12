@@ -9,13 +9,13 @@ from .scan import LidarScan
 from .simulator import LidarSimulator
 
 __all__ = [
+    "CpuLidarTracer",
     "FlatBVH",
     "GaussianCloud",
     "LidarConfig",
     "LidarPose",
     "LidarScan",
     "LidarSimulator",
-    "CpuLidarTracer",
     "MetalLidarTracer",
     "build_bvh",
     "gaussian_aabbs",
