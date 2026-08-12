@@ -24,7 +24,7 @@ from gs_lidar import (
     LidarSimulator,
     build_bvh,
     gaussian_aabbs,
-    load_gaussian_ply,
+    load_gaussian_scene,
 )
 from gs_lidar.rerun_viewer import visualize
 
@@ -32,7 +32,7 @@ from gs_lidar.rerun_viewer import visualize
 # Experiment configuration — edit these values before running the script.
 # -----------------------------------------------------------------------------
 
-PLY_PATH = Path("mug.ply")
+SCENE_PATH = Path("scene.sog")
 BACKEND = "metal"  # "cpu" or "metal"
 
 AZIMUTH_SAMPLES = 360
@@ -54,19 +54,19 @@ RERUN_UP_AXIS = "+Y"
 
 @dataclass(frozen=True)
 class ExperimentTimings:
-    ply_load_seconds: float
+    scene_load_seconds: float
     bvh_build_seconds: float
     device_upload_seconds: float
     trace_seconds: float
 
 
 def load_scene(path: Path) -> GaussianCloud:
-    """Load and normalize a canonical 3DGS PLY scene."""
+    """Load and normalize a Gaussian splat scene."""
     if not path.is_file():
         raise FileNotFoundError(
-            f"PLY scene not found: {path}. Set PLY_PATH at the top of this file."
+            f"Gaussian scene not found: {path}. Set SCENE_PATH at the top of this file."
         )
-    return load_gaussian_ply(path)
+    return load_gaussian_scene(path)
 
 
 def create_bvh(scene: GaussianCloud, sigma_cutoff: float) -> FlatBVH:
@@ -185,7 +185,7 @@ def print_statistics(
     print(f"BVH nodes: {bvh.bbox_min.shape[0]}")
     print(f"Rays: {ray_count} ({ELEVATION_SAMPLES} x {AZIMUTH_SAMPLES})")
     print(f"Hits: {hit_count} ({hit_percentage:.1f}%)")
-    print(f"PLY load: {timings.ply_load_seconds:.3f} s")
+    print(f"Scene load: {timings.scene_load_seconds:.3f} s")
     print(f"BVH build: {timings.bvh_build_seconds:.3f} s")
     print(f"Device upload: {timings.device_upload_seconds:.3f} s")
     print(f"Trace: {timings.trace_seconds:.3f} s ({mrays_per_second:.3f} MRays/s)")
@@ -204,8 +204,8 @@ def run_experiment() -> None:
     device = select_device(BACKEND)
 
     started = time.perf_counter()
-    scene = load_scene(PLY_PATH)
-    ply_loaded = time.perf_counter()
+    scene = load_scene(SCENE_PATH)
+    scene_loaded = time.perf_counter()
 
     bvh = create_bvh(scene, SIGMA_CUTOFF)
     bvh_built = time.perf_counter()
@@ -221,8 +221,8 @@ def run_experiment() -> None:
     scan_finished = time.perf_counter()
 
     timings = ExperimentTimings(
-        ply_load_seconds=ply_loaded - started,
-        bvh_build_seconds=bvh_built - ply_loaded,
+        scene_load_seconds=scene_loaded - started,
+        bvh_build_seconds=bvh_built - scene_loaded,
         device_upload_seconds=data_uploaded - bvh_built,
         trace_seconds=scan_finished - data_uploaded,
     )

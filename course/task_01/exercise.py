@@ -29,14 +29,14 @@ from gs_lidar import (
     generate_rays,
     build_bvh,
     gaussian_aabbs,
-    load_gaussian_ply,
+    load_gaussian_scene,
 )
 
 # -----------------------------------------------------------------------------
 # Experiment configuration — edit these values before running the script.
 # -----------------------------------------------------------------------------
 
-PLY_PATH = Path("mug.ply")
+SCENE_PATH = Path("scene.sog")
 BACKEND = "metal"  # "cpu" or "metal"
 
 AZIMUTH_SAMPLES = 360
@@ -60,12 +60,12 @@ RERUN_UP_AXIS = "+Y"
 
 
 def load_scene(path: Path) -> GaussianCloud:
-    # TODO: проверьте путь и загрузите canonical 3DGS PLY
+    # TODO: проверьте путь и загрузите сцену в формате, поддерживаемом gsply
     raise NotImplementedError
 
 
 def main() -> None:
-    scene = load_scene(PLY_PATH)
+    scene = load_scene(SCENE_PATH)
     print(f"Загружено гауссиан: {scene.means.shape[0]}")
     print(f"Диапазон opacity: {scene.opacities.min():.4f} .. {scene.opacities.max():.4f}")
 

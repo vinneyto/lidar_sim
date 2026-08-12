@@ -1,6 +1,6 @@
 # Задача 9. Собрать статическую часть симулятора
 
-Главная оптимизация эксперимента — не загружать PLY и не строить BVH в цикле.
+Главная оптимизация эксперимента — не загружать сцену и не строить BVH в цикле.
 Сначала `scene_cpu`, `bvh_cpu` и статическая визуализация; затем `.to(device)` для
 обоих объектов. `GaussianCloud.to` и `FlatBVH.to` возвращают новые dataclass,
 сохраняя CPU-оригиналы.
@@ -8,7 +8,7 @@
 ```python
 def run_experiment() -> None:
     device = select_device(BACKEND)
-    scene_cpu = load_scene(PLY_PATH)
+    scene_cpu = load_scene(SCENE_PATH)
     bvh_cpu = create_bvh(scene_cpu)
     initialize_rerun(scene_cpu)
     scene, bvh = scene_cpu.to(device), bvh_cpu.to(device)

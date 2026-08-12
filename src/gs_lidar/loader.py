@@ -1,48 +1,64 @@
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import torch
 
 from .gaussian_cloud import GaussianCloud
 
 
-def load_gaussian_ply(path: str | Path) -> GaussianCloud:
-    """Load canonical Inria 3DGS PLY (scale logits, opacity logits, scalar-first rotation)."""
-    from plyfile import PlyData
+def _field(scene: Any, *names: str) -> Any:
+    """Return a gsply scene field across its mapping and object representations."""
+    for name in names:
+        if isinstance(scene, Mapping) and name in scene:
+            return scene[name]
+        if hasattr(scene, name):
+            return getattr(scene, name)
+    raise ValueError(f"gsply scene is missing the field {names[0]!r}")
 
-    vertex = PlyData.read(str(path))["vertex"].data
-    names = set(vertex.dtype.names or ())
-    required = {
-        "x",
-        "y",
-        "z",
-        "scale_0",
-        "scale_1",
-        "scale_2",
-        "rot_0",
-        "rot_1",
-        "rot_2",
-        "rot_3",
-        "opacity",
-    }
-    missing = required - names
-    if missing:
-        raise ValueError(
-            f"not a canonical 3DGS PLY; missing properties: {sorted(missing)}"
-        )
 
-    def tensor(columns: list[str]) -> torch.Tensor:
-        # plyfile exposes structured NumPy data; conversion is confined to this boundary.
-        return torch.stack(
-            [torch.from_numpy(vertex[c].copy()) for c in columns], -1
-        ).float()
+def _tensor(value: Any, columns: int | None = None) -> torch.Tensor:
+    tensor = torch.as_tensor(value).detach().clone().float()
+    if columns is not None and (tensor.ndim != 2 or tensor.shape[1] != columns):
+        raise ValueError(f"expected an [N,{columns}] gsply field, got {list(tensor.shape)}")
+    return tensor
 
-    means = tensor(["x", "y", "z"])
-    scales = tensor(["scale_0", "scale_1", "scale_2"]).exp()
-    rotations = tensor(["rot_0", "rot_1", "rot_2", "rot_3"])
-    opacities = torch.from_numpy(vertex["opacity"].copy()).float().sigmoid()
-    colors = None
-    if {"f_dc_0", "f_dc_1", "f_dc_2"} <= names:
-        colors = (
-            0.5 + 0.28209479177387814 * tensor(["f_dc_0", "f_dc_1", "f_dc_2"])
-        ).clamp(0, 1)
+
+def load_gaussian_scene(path: str | Path) -> GaussianCloud:
+    """Load any Gaussian-splat scene format supported by gsply.
+
+    gsply presents PLY, SOG, SPLAT and its other supported encodings through a
+    normalized representation: scales are linear, opacity is in ``[0, 1]``,
+    and rotations are scalar-first quaternions.  No format-specific decoding
+    belongs in the LiDAR simulator.
+    """
+    import gsply
+
+    source = Path(path)
+    scene = gsply.load(source)
+
+    means = _tensor(_field(scene, "means", "positions"), 3)
+    scales = _tensor(_field(scene, "scales"), 3)
+    rotations = _tensor(_field(scene, "rotations", "quaternions"), 4)
+    opacities = _tensor(_field(scene, "opacities", "opacity")).squeeze(-1)
+    if opacities.ndim != 1:
+        raise ValueError(f"expected an [N] gsply opacity field, got {list(opacities.shape)}")
+
+    colors_value = None
+    for name in ("colors", "sh0"):
+        if (isinstance(scene, Mapping) and name in scene) or hasattr(scene, name):
+            colors_value = _field(scene, name)
+            break
+    colors = None if colors_value is None else _tensor(colors_value, 3)
+
+    count = means.shape[0]
+    if any(value.shape[0] != count for value in (scales, rotations, opacities)):
+        raise ValueError("gsply scene fields have inconsistent Gaussian counts")
+    if colors is not None and colors.shape[0] != count:
+        raise ValueError("gsply color field has an inconsistent Gaussian count")
     return GaussianCloud(means, scales, rotations, opacities, colors).normalized()
+
+
+def load_gaussian_ply(path: str | Path) -> GaussianCloud:
+    """Backward-compatible alias; prefer :func:`load_gaussian_scene`."""
+    return load_gaussian_scene(path)

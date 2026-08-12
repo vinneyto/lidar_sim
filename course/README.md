@@ -22,15 +22,16 @@
    `course/reference/02_circular_scan.py` (это целевая версия эксперимента с
    явной функцией `main()`).
 
-Для запуска нужны зависимости проекта (`uv sync`) и canonical Inria 3DGS PLY.
-Укажите его в `PLY_PATH`. CPU доступен везде; `metal` требует macOS, Apple Silicon
+Для запуска нужны зависимости проекта (`uv sync`) и сцена Gaussian Splatting в
+любом формате, который поддерживает `gsply` (например, компактный SOG).
+Укажите его в `SCENE_PATH`. CPU доступен везде; `metal` требует macOS, Apple Silicon
 и PyTorch MPS. Rerun откроет интерактивную 3D-сцену.
 
 ## Карта модулей
 
 | Задача | Результат | Модули проекта |
 |---|---|---|
-| 1 | загрузка PLY | `loader`, `gaussian_cloud` |
+| 1 | загрузка сцены через gsply | `loader`, `gaussian_cloud` |
 | 2 | AABB и BVH | `gaussian_geometry`, `bvh` |
 | 3 | выбор CPU/MPS | `simulator`, `cpu_tracer`, `metal_tracer` |
 | 4 | круговая траектория | `lidar.LidarPose` |
