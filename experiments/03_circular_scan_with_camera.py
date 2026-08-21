@@ -12,6 +12,7 @@ degrees below the orbit tangent and keeps a stable, roll-free up direction.
 
 import math
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -44,7 +45,6 @@ CAMERA_NEAR = 0.1
 CAMERA_FAR = 10.0
 CAMERA_FRUSTUM_DEPTH = 0.35
 CAMERA_DOWNWARD_PITCH_DEGREES = 15.0
-QUATERNION_ORDER = "xyzw"  # Same convention as course_3dgs.
 
 # Rerun turntable rotation axis. This reconstructed model uses "+Y"
 # (and some exports may need "-Y").
@@ -58,6 +58,11 @@ def load_scene(path: Path) -> GaussianCloud:
             f"PLY scene not found: {path}. Set PLY_PATH at the top of this file."
         )
     return load_gaussian_ply(path)
+
+
+def to_camera_scene_xyzw(scene_wxyz: GaussianCloud) -> GaussianCloud:
+    """Convert PLY ``wxyz`` rotations once for both camera renderers."""
+    return replace(scene_wxyz, rotations=scene_wxyz.rotations[:, [1, 2, 3, 0]])
 
 
 def select_device() -> torch.device:
@@ -245,11 +250,12 @@ def run_experiment() -> None:
         raise ValueError("orbit radius, step duration, and step count must be positive")
 
     device = select_device()
-    scene_cpu = load_scene(PLY_PATH)
-    initialize_rerun(scene_cpu)
+    scene_wxyz_cpu = load_scene(PLY_PATH)
+    scene_xyzw_cpu = to_camera_scene_xyzw(scene_wxyz_cpu)
+    initialize_rerun(scene_xyzw_cpu)
 
-    scene = scene_cpu.to(device)
-    renderer = MetalGaussianRenderer(scene, quaternion_order=QUATERNION_ORDER)
+    scene_xyzw = scene_xyzw_cpu.to(device)
+    renderer = MetalGaussianRenderer(scene_xyzw)
     camera_intrinsics = create_camera_intrinsics()
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
 
