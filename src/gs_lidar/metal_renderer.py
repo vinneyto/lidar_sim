@@ -8,7 +8,6 @@ from time import perf_counter
 import torch
 
 from .gaussian_cloud import GaussianCloud
-from .gaussian_geometry import quaternion_to_matrix
 
 _KERNEL_DIR = Path(__file__).with_name("metal_renderer_kernels")
 _SCAN_BLOCK_SIZE = 256
@@ -39,9 +38,38 @@ class CameraIntrinsics:
             raise ValueError("camera planes must satisfy 0 < near < far")
 
 
-def gaussian_covariances(scene: GaussianCloud) -> torch.Tensor:
-    """Build world-space covariance matrices from scalar-first quaternions."""
-    rotation = quaternion_to_matrix(scene.rotations)
+def _quaternion_xyzw_to_matrix(quaternion: torch.Tensor) -> torch.Tensor:
+    """Convert normalized ``(x, y, z, w)`` quaternions to rotation matrices."""
+    quaternion = torch.nn.functional.normalize(quaternion, dim=-1)
+    x, y, z, w = quaternion.unbind(-1)
+    return torch.stack(
+        (
+            1 - 2 * (y * y + z * z),
+            2 * (x * y - z * w),
+            2 * (x * z + y * w),
+            2 * (x * y + z * w),
+            1 - 2 * (x * x + z * z),
+            2 * (y * z - x * w),
+            2 * (x * z - y * w),
+            2 * (y * z + x * w),
+            1 - 2 * (x * x + y * y),
+        ),
+        dim=-1,
+    ).reshape(quaternion.shape[:-1] + (3, 3))
+
+
+def gaussian_covariances(
+    scene: GaussianCloud, quaternion_order: str = "wxyz"
+) -> torch.Tensor:
+    """Build covariances using the quaternion convention from ``course_3dgs``."""
+    if quaternion_order == "xyzw":
+        quaternion_xyzw = scene.rotations
+    elif quaternion_order == "wxyz":
+        quaternion_xyzw = scene.rotations[:, [1, 2, 3, 0]]
+    else:
+        raise ValueError("quaternion_order must be either 'xyzw' or 'wxyz'")
+
+    rotation = _quaternion_xyzw_to_matrix(quaternion_xyzw)
     scale_squared = torch.diag_embed(scene.scales.square())
     return rotation @ scale_squared @ rotation.transpose(-1, -2)
 
@@ -49,7 +77,9 @@ def gaussian_covariances(scene: GaussianCloud) -> torch.Tensor:
 class MetalGaussianRenderer:
     """Reusable, SH-free Metal 3DGS renderer for one static Gaussian scene."""
 
-    def __init__(self, scene: GaussianCloud) -> None:
+    def __init__(
+        self, scene: GaussianCloud, quaternion_order: str = "wxyz"
+    ) -> None:
         if scene.means.device.type != "mps":
             raise ValueError("scene must already reside on MPS")
         if scene.colors is None:
@@ -67,7 +97,9 @@ class MetalGaussianRenderer:
         self.opacity_logits = torch.logit(
             scene.opacities.clamp(epsilon, 1.0 - epsilon)
         ).contiguous()
-        self.covariances = gaussian_covariances(scene).contiguous()
+        self.covariances = gaussian_covariances(
+            scene, quaternion_order=quaternion_order
+        ).contiguous()
 
     def render(
         self,
