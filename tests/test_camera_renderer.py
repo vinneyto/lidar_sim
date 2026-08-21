@@ -71,7 +71,24 @@ def test_metal_kernel_resources_are_packaged_next_to_renderer():
     assert "kernel void tile_rasterizer_kernel" in _read_kernel("tile_rasterizer.metal")
 
 
-def test_log_scan_records_synchronized_image_and_lidar(monkeypatch):
+def test_camera_frustum_is_a_pyramid_pointing_forward():
+    c2w = circular_scan_with_camera.camera_c2w(torch.device("cpu"), 0.0)
+    intrinsics = circular_scan_with_camera.create_camera_intrinsics()
+
+    strips = circular_scan_with_camera.camera_frustum_line_strips(
+        c2w, intrinsics, depth=0.5
+    )
+
+    assert len(strips) == 5
+    assert strips[0].shape == (5, 3)
+    torch.testing.assert_close(strips[0][0], strips[0][-1])
+    for side, corner in zip(strips[1:], strips[0][:-1]):
+        torch.testing.assert_close(side[0], c2w[:3, 3])
+        torch.testing.assert_close(side[1], corner)
+        assert torch.dot(side[1] - side[0], c2w[:3, 2]).item() == pytest.approx(0.5)
+
+
+def test_log_frame_records_synchronized_frustum_and_image(monkeypatch):
     times = []
     logged = []
 
@@ -81,34 +98,27 @@ def test_log_scan_records_synchronized_image_and_lidar(monkeypatch):
             self.kwargs = kwargs
 
     rerun = SimpleNamespace(
-        Points3D=Archetype,
-        Arrows3D=Archetype,
+        LineStrips3D=Archetype,
         Image=Archetype,
         set_time=lambda timeline, *, sequence: times.append((timeline, sequence)),
         log=lambda path, value: logged.append((path, value)),
     )
     monkeypatch.setitem(sys.modules, "rerun", rerun)
 
-    pose = circular_scan_with_camera.LidarPose(
-        torch.tensor([1.0, 0.0, 0.0]),
-        torch.tensor([1.0, 0.0, 0.0, 0.0]),
-    )
     c2w = circular_scan_with_camera.camera_c2w(torch.device("cpu"), 0.0)
-    circular_scan_with_camera.log_scan(
+    circular_scan_with_camera.log_frame(
         4,
-        pose,
-        torch.tensor([[2.0, 3.0, 4.0]]),
         c2w,
+        circular_scan_with_camera.create_camera_intrinsics(),
         torch.ones((2, 3, 3)),
     )
 
-    assert times == [("scan", 4)]
+    assert times == [("frame", 4)]
     assert [path for path, _ in logged] == [
-        "world/lidar/position",
-        "world/lidar/returns",
-        "world/camera/forward",
+        "world/camera/frustum",
         "camera/render",
     ]
+    assert len(logged[0][1].args[0]) == 5
     assert logged[-1][1].args[0].dtype.name == "uint8"
 
 
