@@ -1,20 +1,16 @@
-"""Run circular LiDAR scans with a co-located tangential RGB camera.
+"""Render a tangential 3DGS camera while it follows a circular trajectory.
 
 Edit the constants below, then run:
 
     uv run python experiments/03_circular_scan_with_camera.py
 
 The one-meter orbit is centered at the coordinate origin and lies in the XZ
-plane. Rerun shows the LiDAR scene on the left and the SH-free Metal 3DGS
-camera render on the right. The camera looks along the orbit tangent, with its
-local +Y axis pointing toward world +Y.
+plane. Rerun shows the 3DGS scene and a moving camera-frustum pyramid on the
+left, and the SH-free Metal camera render on the right. The camera looks along
+the orbit tangent, with its local +Y axis pointing toward world +Y.
 """
 
-import hashlib
-import json
 import math
-import platform
-import sys
 import time
 from pathlib import Path
 
@@ -22,15 +18,8 @@ import torch
 
 from gs_lidar import (
     CameraIntrinsics,
-    FlatBVH,
     GaussianCloud,
-    LidarConfig,
-    LidarPose,
-    LidarScan,
-    LidarSimulator,
     MetalGaussianRenderer,
-    build_bvh,
-    gaussian_aabbs,
     load_gaussian_ply,
 )
 
@@ -39,14 +28,6 @@ from gs_lidar import (
 # -----------------------------------------------------------------------------
 
 PLY_PATH = Path("mug.ply")
-BACKEND = "metal"  # "cpu" or "metal"
-
-AZIMUTH_SAMPLES = 360
-ELEVATION_SAMPLES = 64
-NEAR = 0.1
-FAR = 100.0
-SIGMA_CUTOFF = 3.0
-ALPHA_THRESHOLD = 0.5
 
 ORBIT_CENTER = (0.0, 0.0, 0.0)
 ORBIT_RADIUS = 1.0
@@ -61,10 +42,10 @@ CAMERA_FX = 500.0
 CAMERA_FY = 500.0
 CAMERA_NEAR = 0.1
 CAMERA_FAR = 10.0
-DEBUG_LOG_PATH = Path("circular_scan_with_camera_debug.jsonl")
+CAMERA_FRUSTUM_DEPTH = 0.35
 
-# Rerun turntable rotation axis. Canonical simulator coordinates use "+Z";
-# this reconstructed model uses "+Y" (and some exports may need "-Y").
+# Rerun turntable rotation axis. This reconstructed model uses "+Y"
+# (and some exports may need "-Y").
 RERUN_UP_AXIS = "+Y"
 
 
@@ -77,22 +58,10 @@ def load_scene(path: Path) -> GaussianCloud:
     return load_gaussian_ply(path)
 
 
-def create_bvh(scene: GaussianCloud) -> FlatBVH:
-    """Build the finite-support Gaussian BVH once on the CPU."""
-    bbox_min, bbox_max = gaussian_aabbs(
-        scene.means, scene.scales, scene.rotations, SIGMA_CUTOFF
-    )
-    return build_bvh(bbox_min, bbox_max)
-
-
-def select_device(backend: str) -> torch.device:
-    """Validate the selected backend and return its torch device."""
-    if backend == "cpu":
-        return torch.device("cpu")
-    if backend != "metal":
-        raise ValueError("BACKEND must be either 'cpu' or 'metal'")
+def select_device() -> torch.device:
+    """Return the MPS device required by the Metal renderer."""
     if not torch.backends.mps.is_available():
-        raise RuntimeError("BACKEND='metal' requires an available PyTorch MPS backend")
+        raise RuntimeError("This experiment requires an available PyTorch MPS backend")
     return torch.device("mps")
 
 
@@ -110,7 +79,7 @@ def orbit_position(device: torch.device, angle_radians: float) -> torch.Tensor:
 
 
 def orbit_points() -> torch.Tensor:
-    """Create a closed polyline describing the fixed sensor orbit."""
+    """Create a closed polyline describing the fixed camera orbit."""
     center = torch.tensor(ORBIT_CENTER, dtype=torch.float32)
     angles = torch.linspace(0, 2 * math.pi, RING_SAMPLES + 1)
     points = center.expand(RING_SAMPLES + 1, 3).clone()
@@ -137,7 +106,7 @@ def camera_c2w(device: torch.device, angle_radians: float) -> torch.Tensor:
 
 
 def create_camera_intrinsics() -> CameraIntrinsics:
-    """Create the fixed camera requested for the circular experiment."""
+    """Create the fixed camera used for rendering and the frustum pyramid."""
     return CameraIntrinsics(
         width=CAMERA_WIDTH,
         height=CAMERA_HEIGHT,
@@ -150,38 +119,41 @@ def create_camera_intrinsics() -> CameraIntrinsics:
     )
 
 
-def lidar_orientation(device: torch.device) -> torch.Tensor:
-    """Align the scanner's elevation axis with this scene's +Y up axis.
+def camera_frustum_line_strips(
+    c2w: torch.Tensor,
+    intrinsics: CameraIntrinsics,
+    depth: float = CAMERA_FRUSTUM_DEPTH,
+) -> list[torch.Tensor]:
+    """Return the rectangular base and four sides of a camera-frustum pyramid."""
+    if depth <= 0:
+        raise ValueError("camera frustum depth must be positive")
 
-    Ray generation is natively Z-up. A -90 degree rotation around X maps the
-    local XY azimuth plane onto the scene's XZ tabletop plane and local +Z onto
-    world +Y. Without this rotation, the orbit and the scan pattern disagree
-    about which direction is up, producing alternating misses and dense bands.
-    """
-    half_angle = -math.pi / 4
-    return torch.tensor(
-        [math.cos(half_angle), math.sin(half_angle), 0.0, 0.0],
-        dtype=torch.float32,
-        device=device,
+    x_left = -intrinsics.cx / intrinsics.fx * depth
+    x_right = (intrinsics.width - intrinsics.cx) / intrinsics.fx * depth
+    y_top = intrinsics.cy / intrinsics.fy * depth
+    y_bottom = -(intrinsics.height - intrinsics.cy) / intrinsics.fy * depth
+    corners_camera = c2w.new_tensor(
+        [
+            [x_left, y_top, depth],
+            [x_right, y_top, depth],
+            [x_right, y_bottom, depth],
+            [x_left, y_bottom, depth],
+        ]
     )
 
-
-def create_config() -> LidarConfig:
-    return LidarConfig(
-        azimuth_samples=AZIMUTH_SAMPLES,
-        elevation_samples=ELEVATION_SAMPLES,
-        near=NEAR,
-        far=FAR,
-        gaussian_sigma_cutoff=SIGMA_CUTOFF,
-        accumulated_alpha_threshold=ALPHA_THRESHOLD,
-    )
+    rotation = c2w[:3, :3]
+    origin = c2w[:3, 3]
+    corners_world = corners_camera @ rotation.T + origin
+    base = torch.cat((corners_world, corners_world[:1]), dim=0)
+    sides = [torch.stack((origin, corner)) for corner in corners_world]
+    return [base, *sides]
 
 
 def initialize_rerun(scene: GaussianCloud) -> None:
     """Open Rerun and log the immutable scene and circular trajectory."""
     import rerun as rr
 
-    rr.init("gs-lidar-circular-scan-with-camera", spawn=True)
+    rr.init("3dgs-circular-camera", spawn=True)
     rr.send_blueprint(
         rr.blueprint.Blueprint(
             rr.blueprint.Horizontal(
@@ -222,7 +194,7 @@ def initialize_rerun(scene: GaussianCloud) -> None:
         static=True,
     )
     rr.log(
-        "world/lidar/orbit",
+        "world/camera/orbit",
         rr.LineStrips3D(
             [numpy(orbit_points())],
             colors=[120, 170, 255],
@@ -232,187 +204,54 @@ def initialize_rerun(scene: GaussianCloud) -> None:
     )
 
 
-def log_scan(
+def log_frame(
     step: int,
-    pose: LidarPose,
-    points: torch.Tensor,
     c2w: torch.Tensor,
+    intrinsics: CameraIntrinsics,
     image: torch.Tensor,
 ) -> None:
-    """Record synchronized LiDAR and camera outputs on the scan timeline."""
+    """Record the moving camera-frustum pyramid and synchronized image."""
     import rerun as rr
 
-    # Rerun 0.23+ uses the unified set_time API. Passing an integer sequence
-    # value gives every scan its own frame on the timeline.
-    rr.set_time("scan", sequence=step)
+    rr.set_time("frame", sequence=step)
+    line_strips = [
+        strip.detach().cpu().numpy()
+        for strip in camera_frustum_line_strips(c2w, intrinsics)
+    ]
     rr.log(
-        "world/lidar/position",
-        rr.Points3D(
-            pose.position.detach().cpu().numpy()[None],
-            colors=[255, 180, 0],
-            radii=0.08,
-        ),
-    )
-    rr.log(
-        "world/lidar/returns",
-        rr.Points3D(points.detach().cpu().numpy(), colors=[0, 255, 120], radii=0.01),
-    )
-    camera_origin = c2w[:3, 3].detach().cpu().numpy()[None]
-    camera_forward = c2w[:3, 2].detach().cpu().numpy()[None]
-    rr.log(
-        "world/camera/forward",
-        rr.Arrows3D(
-            origins=camera_origin,
-            vectors=camera_forward,
+        "world/camera/frustum",
+        rr.LineStrips3D(
+            line_strips,
             colors=[80, 160, 255],
-            radii=0.015,
+            radii=0.01,
         ),
     )
     image_u8 = image.detach().clamp(0, 1).mul(255).to(torch.uint8).cpu().numpy()
     rr.log("camera/render", rr.Image(image_u8))
 
 
-def tensor_digest(tensor: torch.Tensor) -> str:
-    """Return a compact, deterministic fingerprint of a CPU tensor."""
-    return hashlib.sha256(tensor.contiguous().numpy().tobytes()).hexdigest()[:16]
-
-
-def scan_diagnostics(
-    step: int,
-    pose: LidarPose,
-    scan: LidarScan,
-    previous: dict[str, torch.Tensor] | None,
-) -> tuple[dict[str, object], dict[str, torch.Tensor]]:
-    """Collect enough CPU-side data to diagnose unstable repeated scans."""
-    hit_mask = scan.hit_mask.detach().cpu()
-    ranges = scan.ranges.detach().cpu()
-    gaussian_ids = scan.gaussian_ids.detach().cpu()
-    alpha = scan.accumulated_alpha.detach().cpu()
-    valid_ranges = ranges[hit_mask]
-    valid_alpha = alpha[torch.isfinite(alpha)]
-
-    record: dict[str, object] = {
-        "step": step,
-        "position": pose.position.detach().cpu().tolist(),
-        "orientation_wxyz": pose.orientation.detach().cpu().tolist(),
-        "hits": int(hit_mask.sum()),
-        "candidate_overflows": (
-            int(scan.candidate_overflow_count.detach().cpu().item())
-            if scan.candidate_overflow_count is not None
-            else None
-        ),
-        "stack_overflows": (
-            int(scan.bvh_stack_overflow_count.detach().cpu().item())
-            if scan.bvh_stack_overflow_count is not None
-            else None
-        ),
-        "hit_mask_digest": tensor_digest(hit_mask),
-        "range_digest": tensor_digest(ranges),
-        "gaussian_id_digest": tensor_digest(gaussian_ids),
-        "hits_per_elevation_row": hit_mask.sum(dim=1).tolist(),
-        "range_min_mean_max": (
-            [
-                float(valid_ranges.min()),
-                float(valid_ranges.mean()),
-                float(valid_ranges.max()),
-            ]
-            if valid_ranges.numel()
-            else None
-        ),
-        "alpha_min_mean_max": (
-            [
-                float(valid_alpha.min()),
-                float(valid_alpha.mean()),
-                float(valid_alpha.max()),
-            ]
-            if valid_alpha.numel()
-            else None
-        ),
-    }
-    current = {"hit_mask": hit_mask, "ranges": ranges, "ids": gaussian_ids}
-    if previous is not None:
-        common_hits = hit_mask & previous["hit_mask"]
-        record["changed_hit_masks"] = int((hit_mask != previous["hit_mask"]).sum())
-        record["changed_gaussian_ids"] = int((gaussian_ids != previous["ids"]).sum())
-        record["common_hit_range_abs_max"] = (
-            float((ranges[common_hits] - previous["ranges"][common_hits]).abs().max())
-            if common_hits.any()
-            else None
-        )
-    return record, current
-
-
-def write_debug_header(scene: GaussianCloud, config: LidarConfig) -> None:
-    """Start a machine-readable diagnostic log that can be shared verbatim."""
-    header = {
-        "kind": "configuration",
-        "backend": BACKEND,
-        "python_version": sys.version,
-        "platform": platform.platform(),
-        "torch_version": torch.__version__,
-        "mps_available": torch.backends.mps.is_available(),
-        "gaussians": scene.means.shape[0],
-        "azimuth_samples": config.azimuth_samples,
-        "elevation_samples": config.elevation_samples,
-        "near": config.near,
-        "far": config.far,
-        "sigma_cutoff": config.gaussian_sigma_cutoff,
-        "alpha_threshold": config.accumulated_alpha_threshold,
-        "camera_width": CAMERA_WIDTH,
-        "camera_height": CAMERA_HEIGHT,
-        "camera_fx": CAMERA_FX,
-        "camera_fy": CAMERA_FY,
-        "camera_near": CAMERA_NEAR,
-        "camera_far": CAMERA_FAR,
-    }
-    DEBUG_LOG_PATH.write_text(json.dumps(header) + "\n")
-
-
 def run_experiment() -> None:
-    """Build the static scene once, then scan at every point on the orbit."""
+    """Render the moving camera at every point on its circular orbit."""
     if ORBIT_RADIUS <= 0 or STEP_SECONDS <= 0 or NUMBER_OF_STEPS < 1:
         raise ValueError("orbit radius, step duration, and step count must be positive")
-    if BACKEND != "metal":
-        raise ValueError("the camera renderer requires BACKEND='metal'")
 
-    device = select_device(BACKEND)
+    device = select_device()
     scene_cpu = load_scene(PLY_PATH)
-    bvh_cpu = create_bvh(scene_cpu)
     initialize_rerun(scene_cpu)
 
-    scene, bvh = scene_cpu.to(device), bvh_cpu.to(device)
-    simulator = LidarSimulator(scene, bvh, BACKEND)
+    scene = scene_cpu.to(device)
     renderer = MetalGaussianRenderer(scene)
-    config = create_config()
     camera_intrinsics = create_camera_intrinsics()
-    write_debug_header(scene_cpu, config)
-    orientation = lidar_orientation(device)
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
-    previous_diagnostics = None
 
     for step in range(NUMBER_OF_STEPS):
         angle = angular_velocity * STEP_SECONDS * step
-        pose = LidarPose(orbit_position(device, angle), orientation)
-        scan = simulator.scan(pose, config)
         c2w = camera_c2w(device, angle)
         image = renderer.render(c2w, camera_intrinsics)
-        diagnostics, previous_diagnostics = scan_diagnostics(
-            step, pose, scan, previous_diagnostics
-        )
-        with DEBUG_LOG_PATH.open("a") as debug_log:
-            debug_log.write(json.dumps(diagnostics) + "\n")
-        log_scan(step, pose, scan.valid_points(), c2w, image)
-        print(
-            f"Scan {step + 1}/{NUMBER_OF_STEPS}: {diagnostics['hits']} hits; "
-            f"candidate_overflows={diagnostics['candidate_overflows']}; "
-            f"stack_overflows={diagnostics['stack_overflows']}; "
-            f"mask={diagnostics['hit_mask_digest']}; "
-            f"ranges={diagnostics['range_digest']}"
-        )
+        log_frame(step, c2w, camera_intrinsics, image)
+        print(f"Rendered frame {step + 1}/{NUMBER_OF_STEPS}")
         if step + 1 < NUMBER_OF_STEPS:
             time.sleep(STEP_SECONDS)
-
-    print(f"Diagnostic log: {DEBUG_LOG_PATH.resolve()}")
 
 
 if __name__ == "__main__":
