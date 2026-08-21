@@ -86,8 +86,10 @@ parallel to the XZ tabletop/orbit plane.
 The third experiment contains no LiDAR simulation. A pinhole camera follows the
 same circular trajectory while a wireframe frustum pyramid marks its current
 pose in the 3D view. The synchronized SH-free Metal 3DGS render appears on the
-right. The camera looks along the trajectory tangent, uses a right-handed
-`+X`-right/`+Y`-up/`+Z`-forward basis, and clips geometry outside `0.1–10 m`.
+right. The camera looks slightly downward from the trajectory tangent and uses
+the same `(x,y,z,w)` Gaussian quaternion order as `course_3dgs`. It keeps a
+right-handed `+X`-right/`+Y`-up/`+Z`-forward basis and clips geometry outside
+`0.1–10 m`.
 Projection, covariance projection, tile binning, radix sorting, and tile
 rasterization run through custom Metal kernels; PyTorch owns and dispatches the
 MPS buffers.
