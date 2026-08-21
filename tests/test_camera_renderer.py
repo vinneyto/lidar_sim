@@ -21,15 +21,15 @@ circular_scan_with_camera = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(circular_scan_with_camera)
 
 
-def test_camera_pose_follows_orbit_tangent_with_downward_pitch():
+def test_camera_looks_toward_orbit_center_with_downward_pitch():
     pitch = math.radians(circular_scan_with_camera.CAMERA_DOWNWARD_PITCH_DEGREES)
     for angle in (0.0, math.pi / 2, math.pi, 3 * math.pi / 2):
         c2w = circular_scan_with_camera.camera_c2w(torch.device("cpu"), angle)
         expected_forward = torch.tensor(
             [
-                -math.cos(pitch) * math.sin(angle),
+                -math.cos(pitch) * math.cos(angle),
                 -math.sin(pitch),
-                math.cos(pitch) * math.cos(angle),
+                -math.cos(pitch) * math.sin(angle),
             ],
             dtype=torch.float32,
         )
