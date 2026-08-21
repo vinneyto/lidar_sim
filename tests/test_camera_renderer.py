@@ -21,18 +21,24 @@ circular_scan_with_camera = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(circular_scan_with_camera)
 
 
-def test_camera_pose_follows_orbit_tangent_with_y_up():
+def test_camera_pose_follows_orbit_tangent_with_downward_pitch():
+    pitch = math.radians(circular_scan_with_camera.CAMERA_DOWNWARD_PITCH_DEGREES)
     for angle in (0.0, math.pi / 2, math.pi, 3 * math.pi / 2):
         c2w = circular_scan_with_camera.camera_c2w(torch.device("cpu"), angle)
         expected_forward = torch.tensor(
-            [-math.sin(angle), 0.0, math.cos(angle)], dtype=torch.float32
+            [
+                -math.cos(pitch) * math.sin(angle),
+                -math.sin(pitch),
+                math.cos(pitch) * math.cos(angle),
+            ],
+            dtype=torch.float32,
         )
 
         torch.testing.assert_close(
             c2w[:3, 3],
             circular_scan_with_camera.orbit_position(torch.device("cpu"), angle),
         )
-        torch.testing.assert_close(c2w[:3, 1], torch.tensor([0.0, 1.0, 0.0]))
+        assert c2w[1, 1].item() > 0
         torch.testing.assert_close(c2w[:3, 2], expected_forward, atol=1e-6, rtol=0)
         torch.testing.assert_close(c2w[:3, :3].T @ c2w[:3, :3], torch.eye(3))
         assert torch.det(c2w[:3, :3]).item() == pytest.approx(1.0)
@@ -47,16 +53,16 @@ def test_camera_intrinsics_use_requested_clipping_planes():
     assert intrinsics.cy == intrinsics.height / 2
 
 
-def test_covariance_uses_scalar_first_quaternions():
+def test_covariance_uses_course_xyzw_quaternions():
     half_sqrt = math.sqrt(0.5)
     scene = GaussianCloud(
         means=torch.zeros((1, 3)),
         scales=torch.tensor([[2.0, 1.0, 0.5]]),
-        rotations=torch.tensor([[half_sqrt, 0.0, 0.0, half_sqrt]]),
+        rotations=torch.tensor([[0.0, 0.0, half_sqrt, half_sqrt]]),
         opacities=torch.tensor([0.5]),
     )
 
-    covariance = gaussian_covariances(scene)
+    covariance = gaussian_covariances(scene, quaternion_order="xyzw")
 
     torch.testing.assert_close(
         covariance,
@@ -130,13 +136,15 @@ def test_metal_renderer_smoke():
     scene = GaussianCloud(
         means=torch.tensor([[0.0, 0.0, 2.0]], device="mps"),
         scales=torch.tensor([[0.25, 0.25, 0.25]], device="mps"),
-        rotations=torch.tensor([[1.0, 0.0, 0.0, 0.0]], device="mps"),
+        rotations=torch.tensor([[0.0, 0.0, 0.0, 1.0]], device="mps"),
         opacities=torch.tensor([0.9], device="mps"),
         colors=torch.tensor([[1.0, 0.0, 0.0]], device="mps"),
     )
     intrinsics = CameraIntrinsics(32, 32, 24.0, 24.0, 16.0, 16.0)
 
-    image = MetalGaussianRenderer(scene).render(torch.eye(4, device="mps"), intrinsics)
+    image = MetalGaussianRenderer(scene, quaternion_order="xyzw").render(
+        torch.eye(4, device="mps"), intrinsics
+    )
 
     assert image.shape == (32, 32, 3)
     assert torch.isfinite(image).all()
