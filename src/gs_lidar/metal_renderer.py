@@ -39,7 +39,7 @@ class CameraIntrinsics:
 
 
 def _quaternion_xyzw_to_matrix(quaternion: torch.Tensor) -> torch.Tensor:
-    """Convert normalized ``(x, y, z, w)`` quaternions to rotation matrices."""
+    """Match the ``(x, y, z, w)`` conversion used by ``course_3dgs``."""
     quaternion = torch.nn.functional.normalize(quaternion, dim=-1)
     x, y, z, w = quaternion.unbind(-1)
     return torch.stack(
@@ -58,18 +58,9 @@ def _quaternion_xyzw_to_matrix(quaternion: torch.Tensor) -> torch.Tensor:
     ).reshape(quaternion.shape[:-1] + (3, 3))
 
 
-def gaussian_covariances(
-    scene: GaussianCloud, quaternion_order: str = "wxyz"
-) -> torch.Tensor:
-    """Build covariances using the quaternion convention from ``course_3dgs``."""
-    if quaternion_order == "xyzw":
-        quaternion_xyzw = scene.rotations
-    elif quaternion_order == "wxyz":
-        quaternion_xyzw = scene.rotations[:, [1, 2, 3, 0]]
-    else:
-        raise ValueError("quaternion_order must be either 'xyzw' or 'wxyz'")
-
-    rotation = _quaternion_xyzw_to_matrix(quaternion_xyzw)
+def gaussian_covariances(scene: GaussianCloud) -> torch.Tensor:
+    """Build covariances from a camera scene whose rotations are ``xyzw``."""
+    rotation = _quaternion_xyzw_to_matrix(scene.rotations)
     scale_squared = torch.diag_embed(scene.scales.square())
     return rotation @ scale_squared @ rotation.transpose(-1, -2)
 
@@ -77,9 +68,7 @@ def gaussian_covariances(
 class MetalGaussianRenderer:
     """Reusable, SH-free Metal 3DGS renderer for one static Gaussian scene."""
 
-    def __init__(
-        self, scene: GaussianCloud, quaternion_order: str = "wxyz"
-    ) -> None:
+    def __init__(self, scene: GaussianCloud) -> None:
         if scene.means.device.type != "mps":
             raise ValueError("scene must already reside on MPS")
         if scene.colors is None:
@@ -97,9 +86,7 @@ class MetalGaussianRenderer:
         self.opacity_logits = torch.logit(
             scene.opacities.clamp(epsilon, 1.0 - epsilon)
         ).contiguous()
-        self.covariances = gaussian_covariances(
-            scene, quaternion_order=quaternion_order
-        ).contiguous()
+        self.covariances = gaussian_covariances(scene).contiguous()
 
     def render(
         self,
