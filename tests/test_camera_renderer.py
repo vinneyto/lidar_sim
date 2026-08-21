@@ -53,6 +53,22 @@ def test_camera_intrinsics_use_requested_clipping_planes():
     assert intrinsics.cy == intrinsics.height / 2
 
 
+def test_camera_scene_converts_wxyz_once_for_both_renderers():
+    scene_wxyz = GaussianCloud(
+        means=torch.zeros((1, 3)),
+        scales=torch.ones((1, 3)),
+        rotations=torch.tensor([[0.9, 0.1, 0.2, 0.3]]),
+        opacities=torch.tensor([0.5]),
+    )
+
+    scene_xyzw = circular_scan_with_camera.to_camera_scene_xyzw(scene_wxyz)
+
+    torch.testing.assert_close(
+        scene_xyzw.rotations, torch.tensor([[0.1, 0.2, 0.3, 0.9]])
+    )
+    assert scene_xyzw.means is scene_wxyz.means
+
+
 def test_covariance_uses_course_xyzw_quaternions():
     half_sqrt = math.sqrt(0.5)
     scene = GaussianCloud(
@@ -62,7 +78,7 @@ def test_covariance_uses_course_xyzw_quaternions():
         opacities=torch.tensor([0.5]),
     )
 
-    covariance = gaussian_covariances(scene, quaternion_order="xyzw")
+    covariance = gaussian_covariances(scene)
 
     torch.testing.assert_close(
         covariance,
@@ -142,9 +158,7 @@ def test_metal_renderer_smoke():
     )
     intrinsics = CameraIntrinsics(32, 32, 24.0, 24.0, 16.0, 16.0)
 
-    image = MetalGaussianRenderer(scene, quaternion_order="xyzw").render(
-        torch.eye(4, device="mps"), intrinsics
-    )
+    image = MetalGaussianRenderer(scene).render(torch.eye(4, device="mps"), intrinsics)
 
     assert image.shape == (32, 32, 3)
     assert torch.isfinite(image).all()
