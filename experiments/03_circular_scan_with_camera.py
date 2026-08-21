@@ -6,8 +6,8 @@ Edit the constants below, then run:
 
 The one-meter orbit is centered at the coordinate origin and lies in the XZ
 plane. Rerun shows the 3DGS scene and a moving camera-frustum pyramid on the
-left, and the SH-free Metal camera render on the right. The camera looks along
-the orbit tangent, with its local +Y axis pointing toward world +Y.
+left, and the SH-free Metal camera render on the right. The camera looks 15
+degrees below the orbit tangent and keeps a stable, roll-free up direction.
 """
 
 import math
@@ -43,6 +43,8 @@ CAMERA_FY = 500.0
 CAMERA_NEAR = 0.1
 CAMERA_FAR = 10.0
 CAMERA_FRUSTUM_DEPTH = 0.35
+CAMERA_DOWNWARD_PITCH_DEGREES = 15.0
+QUATERNION_ORDER = "xyzw"  # Same convention as course_3dgs.
 
 # Rerun turntable rotation axis. This reconstructed model uses "+Y"
 # (and some exports may need "-Y").
@@ -50,7 +52,7 @@ RERUN_UP_AXIS = "+Y"
 
 
 def load_scene(path: Path) -> GaussianCloud:
-    """Load a canonical 3DGS PLY scene."""
+    """Load the 3DGS PLY scene used by this camera experiment."""
     if not path.is_file():
         raise FileNotFoundError(
             f"PLY scene not found: {path}. Set PLY_PATH at the top of this file."
@@ -89,13 +91,20 @@ def orbit_points() -> torch.Tensor:
 
 
 def camera_c2w(device: torch.device, angle_radians: float) -> torch.Tensor:
-    """Create a tangent-facing camera pose with +Y up and +Z forward."""
+    """Create a downward-pitched tangential camera with no roll."""
     position = orbit_position(device, angle_radians)
-    forward = position.new_tensor(
+    horizontal_forward = position.new_tensor(
         [-math.sin(angle_radians), 0.0, math.cos(angle_radians)]
     )
-    up = position.new_tensor([0.0, 1.0, 0.0])
-    right = torch.linalg.cross(up, forward)
+    world_up = position.new_tensor([0.0, 1.0, 0.0])
+    downward_pitch = math.radians(CAMERA_DOWNWARD_PITCH_DEGREES)
+    forward = (
+        math.cos(downward_pitch) * horizontal_forward
+        - math.sin(downward_pitch) * world_up
+    )
+    right = torch.linalg.cross(world_up, forward)
+    right = right / torch.linalg.norm(right)
+    up = torch.linalg.cross(forward, right)
 
     c2w = torch.eye(4, dtype=torch.float32, device=device)
     c2w[:3, 0] = right
@@ -188,7 +197,7 @@ def initialize_rerun(scene: GaussianCloud) -> None:
         rr.GaussianSplats3D(
             numpy(scene.means),
             scales=numpy(scene.scales),
-            quaternions=numpy(scene.rotations[:, [1, 2, 3, 0]]),
+            quaternions=numpy(scene.rotations),
             colors=numpy(rgba * 255).astype("uint8"),
         ),
         static=True,
@@ -240,7 +249,7 @@ def run_experiment() -> None:
     initialize_rerun(scene_cpu)
 
     scene = scene_cpu.to(device)
-    renderer = MetalGaussianRenderer(scene)
+    renderer = MetalGaussianRenderer(scene, quaternion_order=QUATERNION_ORDER)
     camera_intrinsics = create_camera_intrinsics()
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
 
