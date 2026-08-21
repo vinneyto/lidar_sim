@@ -5,4 +5,3 @@ __pycache__/
 dist/
 *.egg-info/
 circular_scan_debug.jsonl
-circular_scan_with_camera_debug.jsonl
