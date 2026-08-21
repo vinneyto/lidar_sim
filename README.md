@@ -86,8 +86,9 @@ parallel to the XZ tabletop/orbit plane.
 The third experiment contains no LiDAR simulation. A pinhole camera follows the
 same circular trajectory while a wireframe frustum pyramid marks its current
 pose in the 3D view. The synchronized SH-free Metal 3DGS render appears on the
-right. The camera always points toward the center of the circular trajectory
-and 15° downward, keeping the well-reconstructed central object in view. PLY
+right at `1280×960`. The camera always points toward the center of the circular
+trajectory and 15° downward, keeping the well-reconstructed central object in
+view. PLY
 rotations are loaded as `(w,x,y,z)` and converted once to `(x,y,z,w)`; that same
 converted camera scene is passed to both Rerun and the course-derived renderer.
 The camera keeps a right-handed `+X`-right/`+Y`-up/`+Z`-forward basis and clips
