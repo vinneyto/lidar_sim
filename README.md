@@ -20,6 +20,8 @@ uv run pytest
 uv run python experiments/01_basic_scan.py
 # Or animate repeated scans while the LiDAR follows an XZ-plane circle:
 uv run python experiments/02_circular_scan.py
+# Or add a forward tangential 3DGS camera view rendered by Metal:
+uv run python experiments/03_circular_scan_with_camera.py
 ```
 
 The PLY loader deliberately accepts the canonical Inria 3DGS convention:
@@ -81,11 +83,21 @@ the `scan` timeline. Because this reconstructed scene is Y-up, the experiment
 also rotates the simulator's native Z-up scan pattern so its azimuth plane is
 parallel to the XZ tabletop/orbit plane.
 
-For diagnosing backend instability, every run also writes
-`circular_scan_debug.jsonl`. It contains the exact pose, hit and overflow
-counts, output fingerprints, range/alpha summaries, per-elevation-row hit
-counts, and differences from the preceding scan. Attach this file when
-reporting alternating or otherwise inconsistent frames.
+The third experiment follows the same trajectory and adds a co-located pinhole
+camera rendered by the SH-free handwritten Metal 3DGS pipeline. Rerun places
+the LiDAR scene and returns on the left and the synchronized camera image on
+the right. The camera looks along the trajectory tangent, uses a right-handed
+`+X`-right/`+Y`-up/`+Z`-forward basis, and clips geometry outside `0.1–10 m`.
+Projection, covariance projection, tile binning, radix sorting, and tile
+rasterization run through custom Metal kernels; PyTorch owns and dispatches the
+MPS buffers.
+
+For diagnosing backend instability, the circular experiments also write
+`circular_scan_debug.jsonl` or `circular_scan_with_camera_debug.jsonl`. They
+contain the exact pose, hit and overflow counts, output fingerprints,
+range/alpha summaries, per-elevation-row hit counts, and differences from the
+preceding scan. Attach the corresponding file when reporting alternating or
+otherwise inconsistent frames.
 
 ## Scope and future work
 
