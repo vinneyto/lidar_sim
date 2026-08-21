@@ -6,8 +6,9 @@ Edit the constants below, then run:
 
 The one-meter orbit is centered at the coordinate origin and lies in the XZ
 plane. Rerun shows the 3DGS scene and a moving camera-frustum pyramid on the
-left, and the SH-free Metal camera render on the right. The camera looks 15
-degrees below the orbit tangent and keeps a stable, roll-free up direction.
+left, and the SH-free Metal camera render on the right. The camera always looks
+toward the orbit center and 15 degrees downward, with a stable roll-free up
+direction.
 """
 
 import math
@@ -96,11 +97,12 @@ def orbit_points() -> torch.Tensor:
 
 
 def camera_c2w(device: torch.device, angle_radians: float) -> torch.Tensor:
-    """Create a downward-pitched tangential camera with no roll."""
+    """Create a roll-free camera looking toward the orbit center and downward."""
     position = orbit_position(device, angle_radians)
-    horizontal_forward = position.new_tensor(
-        [-math.sin(angle_radians), 0.0, math.cos(angle_radians)]
-    )
+    orbit_center = position.new_tensor(ORBIT_CENTER)
+    horizontal_forward = orbit_center - position
+    horizontal_forward[1] = 0.0
+    horizontal_forward = horizontal_forward / torch.linalg.norm(horizontal_forward)
     world_up = position.new_tensor([0.0, 1.0, 0.0])
     downward_pitch = math.radians(CAMERA_DOWNWARD_PITCH_DEGREES)
     forward = (
