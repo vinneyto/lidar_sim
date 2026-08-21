@@ -47,6 +47,8 @@ def test_camera_looks_toward_orbit_center_with_downward_pitch():
 def test_camera_intrinsics_use_requested_clipping_planes():
     intrinsics = circular_scan_with_camera.create_camera_intrinsics()
 
+    assert (intrinsics.width, intrinsics.height) == (1280, 960)
+    assert (intrinsics.fx, intrinsics.fy) == pytest.approx((1000.0, 1000.0))
     assert intrinsics.near == pytest.approx(0.1)
     assert intrinsics.far == pytest.approx(10.0)
     assert intrinsics.cx == intrinsics.width / 2
