@@ -221,8 +221,9 @@ def test_initialize_rerun_passes_ply_xyzw_without_reordering(monkeypatch):
 
     circular_scan_with_camera.initialize_rerun(scene)
 
-    assert logged["world/scene/gaussians"].quaternions.tolist() == pytest.approx(
-        [[0.1, 0.2, 0.3, 0.9]]
+    torch.testing.assert_close(
+        torch.from_numpy(logged["world/scene/gaussians"].quaternions),
+        torch.tensor([[0.1, 0.2, 0.3, 0.9]]),
     )
 
 
