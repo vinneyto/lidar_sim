@@ -203,22 +203,22 @@ def initialize_rerun(scene: GaussianPlyData) -> None:
 
     rr.log(
         "timings/3dgs_render",
-        rr.SeriesLine(color=[255, 210, 80], name="3DGS render"),
+        rr.SeriesLines(colors=[255, 210, 80], names="3DGS render"),
         static=True,
     )
     rr.log(
         "timings/metal",
-        rr.SeriesLine(color=[0, 255, 0], name="Metal SIFT"),
+        rr.SeriesLines(colors=[0, 255, 0], names="Metal SIFT"),
         static=True,
     )
     rr.log(
         "timings/kornia_eager",
-        rr.SeriesLine(color=[255, 0, 0], name="Kornia eager"),
+        rr.SeriesLines(colors=[255, 0, 0], names="Kornia eager"),
         static=True,
     )
     rr.log(
         "timings/kornia_compiled",
-        rr.SeriesLine(color=[60, 140, 255], name="Kornia compiled"),
+        rr.SeriesLines(colors=[60, 140, 255], names="Kornia compiled"),
         static=True,
     )
 
@@ -341,12 +341,12 @@ def log_frame(
         draw_order=12.0,
     )
 
-    rr.log("timings/3dgs_render", rr.Scalar(render_seconds * 1000.0))
-    rr.log("timings/metal", rr.Scalar(metal_seconds * 1000.0))
-    rr.log("timings/kornia_eager", rr.Scalar(kornia_eager_seconds * 1000.0))
+    rr.log("timings/3dgs_render", rr.Scalars(render_seconds * 1000.0))
+    rr.log("timings/metal", rr.Scalars(metal_seconds * 1000.0))
+    rr.log("timings/kornia_eager", rr.Scalars(kornia_eager_seconds * 1000.0))
     rr.log(
         "timings/kornia_compiled",
-        rr.Scalar(kornia_compiled_seconds * 1000.0),
+        rr.Scalars(kornia_compiled_seconds * 1000.0),
     )
 
 
