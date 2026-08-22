@@ -38,7 +38,6 @@ def _write_test_ply(path: Path, *, sh_levels: int = 4) -> None:
             ("scale_0", math.log(2.0)),
             ("scale_1", math.log(1.0)),
             ("scale_2", math.log(0.5)),
-            # Canonical PLY order is wxyz. Identity becomes xyzw [0,0,0,1].
             ("rot_0", 1.0),
             ("rot_1", 0.0),
             ("rot_2", 0.0),
@@ -86,7 +85,7 @@ def test_camera_intrinsics_use_requested_clipping_planes():
     assert intrinsics.cy == intrinsics.height / 2
 
 
-def test_ply_data_preserves_all_sh_but_renderer_is_locked_to_dc(tmp_path):
+def test_ply_data_preserves_all_sh_for_renderer(tmp_path):
     path = tmp_path / "scene.ply"
     _write_test_ply(path, sh_levels=4)
 
@@ -103,17 +102,17 @@ def test_ply_data_preserves_all_sh_but_renderer_is_locked_to_dc(tmp_path):
         scene.rotations_xyzw, torch.tensor([[0.0, 0.0, 0.0, 1.0]])
     )
 
-    # Higher-order SH stays loaded in GaussianPlyData, but camera rendering is
-    # temporarily forced to the view-independent DC coefficient only.
-    assert renderer_data.sh_levels == 1
-    assert renderer_data.sh_coefficient_count == 1
-    assert renderer_data.sh_coefficients.shape == (1, 1, 3)
-    assert scene.colors is not None
+    assert renderer_data.sh_levels == 4
+    assert renderer_data.sh_coefficient_count == 16
+    assert renderer_data.sh_coefficients.shape == (1, 16, 3)
     torch.testing.assert_close(
-        renderer_data.evaluate_color(torch.eye(4)),
-        scene.colors,
-        atol=1e-6,
-        rtol=0,
+        renderer_data.sh_coefficients[0, 0], torch.tensor([0.1, 0.2, 0.3])
+    )
+    torch.testing.assert_close(
+        renderer_data.sh_coefficients[0, 1], torch.tensor([0.0, 15.0, 30.0])
+    )
+    torch.testing.assert_close(
+        renderer_data.sh_coefficients[0, 15], torch.tensor([14.0, 29.0, 44.0])
     )
     torch.testing.assert_close(
         renderer_data.sigma,
@@ -121,35 +120,12 @@ def test_ply_data_preserves_all_sh_but_renderer_is_locked_to_dc(tmp_path):
         atol=1e-6,
         rtol=0,
     )
-    # The old LiDAR data model remains wxyz for compatibility.
     torch.testing.assert_close(
         lidar_scene.rotations, torch.tensor([[1.0, 0.0, 0.0, 0.0]])
     )
 
 
-def test_dc_adapter_matches_canonical_ply_color_in_course_sigmoid_renderer():
-    sh_c0 = 0.28209479177387814
-    target_color = torch.tensor([[0.8, 0.2, 0.9]], dtype=torch.float32)
-    scene = GaussianPlyData(
-        positions=torch.zeros((1, 3)),
-        scale_raw=torch.zeros((1, 3)),
-        rotations_xyzw=torch.tensor([[0.0, 0.0, 0.0, 1.0]]),
-        opacity_raw=torch.zeros(1),
-        f_dc=(target_color - 0.5) / sh_c0,
-        f_rest=None,
-    )
-
-    renderer_data = scene.to_renderer_data()
-
-    torch.testing.assert_close(
-        renderer_data.evaluate_color(torch.eye(4)),
-        target_color,
-        atol=1e-6,
-        rtol=0,
-    )
-
-
-def test_ply_data_infers_lower_sh_level_but_renderer_stays_dc_only(tmp_path):
+def test_ply_data_infers_lower_complete_sh_level(tmp_path):
     path = tmp_path / "scene_l2.ply"
     _write_test_ply(path, sh_levels=3)
 
@@ -157,11 +133,11 @@ def test_ply_data_infers_lower_sh_level_but_renderer_stays_dc_only(tmp_path):
     renderer_data = scene.to_renderer_data()
 
     assert scene.sh_levels == 3
-    assert renderer_data.sh_levels == 1
-    assert renderer_data.sh_coefficients.shape == (1, 1, 3)
+    assert renderer_data.sh_levels == 3
+    assert renderer_data.sh_coefficients.shape == (1, 9, 3)
 
 
-def test_create_metal_renderer_uses_course_renderer_and_flips_fy(monkeypatch):
+def test_create_metal_renderer_uses_canonical_color_mode_and_flips_fy(monkeypatch):
     captured = {}
 
     class FakeRenderer:
@@ -182,6 +158,7 @@ def test_create_metal_renderer_uses_course_renderer_and_flips_fy(monkeypatch):
     assert captured["fy"] == -21.0
     assert captured["near"] == 0.2
     assert captured["far"] == 5.0
+    assert captured["color_mode"] == "canonical_3dgs"
 
 
 def test_camera_frustum_is_a_pyramid_pointing_forward():
@@ -312,6 +289,7 @@ def test_course_metal_renderer_smoke():
         cy=16.0,
         near=0.1,
         far=10.0,
+        color_mode="canonical_3dgs",
     )
 
     image = renderer.render(torch.eye(4, device=device))
