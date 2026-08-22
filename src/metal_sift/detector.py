@@ -29,9 +29,10 @@ class MetalSiftDetector:
 
     The custom kernels perform RGB-to-gray conversion, separable Gaussian
     filtering, octave downsampling, Difference-of-Gaussian construction,
-    26-neighbour extrema detection, 3D quadratic sub-pixel/scale refinement,
-    contrast rejection, Hessian edge rejection, and dominant-orientation
-    estimation. Only final top-k selection uses a native PyTorch MPS operation.
+    26-neighbour extrema detection, iterative 3D quadratic sub-pixel/scale
+    localization, contrast rejection, Hessian edge rejection, and
+    dominant-orientation estimation. Only final top-k selection uses a native
+    PyTorch MPS operation.
 
     The detector intentionally stops before the 128-dimensional SIFT descriptor:
     the camera experiment only needs stable feature locations to visualize.
@@ -270,17 +271,26 @@ class MetalSiftDetector:
                 )
                 for level in range(gaussian_level_count - 1)
             ]
+            if len(dogs) != 5:
+                raise RuntimeError("the current Metal localization kernel expects five DoG levels")
 
             coordinate_scale = float(1 << octave)
+            # Every localization dispatch gets all five DoG levels. This lets a
+            # candidate move into a neighbouring scale and repeat its quadratic
+            # fit instead of being discarded when the fitted scale crosses a
+            # half-sample boundary.
             for dog_level in range(1, self.scales_per_octave + 1):
-                local_sigma = self.sigma0 * (k ** (dog_level + 0.5))
                 self._dispatch(
                     self._kernels.detect_extrema,
                     (
-                        dogs[dog_level - 1],
-                        dogs[dog_level],
-                        dogs[dog_level + 1],
-                        gaussian_levels[dog_level + 1],
+                        dogs[0],
+                        dogs[1],
+                        dogs[2],
+                        dogs[3],
+                        dogs[4],
+                        gaussian_levels[1],
+                        gaussian_levels[2],
+                        gaussian_levels[3],
                         out_x,
                         out_y,
                         out_scale,
@@ -292,8 +302,10 @@ class MetalSiftDetector:
                         self._i32(octave_height),
                         self._f32(self.contrast_threshold / self.scales_per_octave),
                         self._f32(self.edge_threshold),
-                        self._f32(local_sigma),
+                        self._f32(self.sigma0),
+                        self._f32(k),
                         self._f32(coordinate_scale),
+                        self._i32(dog_level),
                         self._i32(self.max_candidates),
                     ),
                     threads=octave_count,
@@ -337,7 +349,9 @@ class MetalSiftDetector:
             indices = torch.argsort(responses.abs(), descending=True)
 
         return SiftFeatures(
-            keypoints_xy=torch.stack((out_x[:candidate_count][indices], out_y[:candidate_count][indices]), dim=1),
+            keypoints_xy=torch.stack(
+                (out_x[:candidate_count][indices], out_y[:candidate_count][indices]), dim=1
+            ),
             responses=responses[indices],
             scales=out_scale[:candidate_count][indices],
             orientations=out_orientation[:candidate_count][indices],
