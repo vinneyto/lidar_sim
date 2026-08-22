@@ -76,10 +76,6 @@ class MetalSiftDetector:
     _SCALE_FACTOR = math.sqrt(2.0)
     _MR_SIZE = 22.0
     _NMS_BORDER = 15
-    _DOG_SIGMA1 = 1.0
-    _DOG_SIGMA2 = 1.6
-    _DOG_RADIUS1 = 4  # Kornia kernel size 9 for sigma=1.0.
-    _DOG_RADIUS2 = 6  # Kornia kernel size 13 for sigma=1.6.
 
     def __init__(self, num_features: int = 512, *, debug: bool = False) -> None:
         if num_features < 1:
@@ -97,10 +93,6 @@ class MetalSiftDetector:
     @staticmethod
     def _i32(value: int) -> torch.Tensor:
         return torch.tensor(value, dtype=torch.int32, device="mps")
-
-    @staticmethod
-    def _f32(value: float) -> torch.Tensor:
-        return torch.tensor(value, dtype=torch.float32, device="mps")
 
     def _dispatch(
         self,
@@ -138,33 +130,30 @@ class MetalSiftDetector:
         )
         return output
 
-    def _gaussian(
+    def _fixed_gaussian(
         self,
         image: torch.Tensor,
         width: int,
         height: int,
-        sigma: float,
-        radius: int,
+        horizontal_kernel,
+        vertical_kernel,
         keepalive: list[torch.Tensor],
     ) -> torch.Tensor:
+        """Run one of the two precomputed separable BlobDoGSingle Gaussians."""
         temporary = torch.empty_like(image)
         output = torch.empty_like(image)
-        args_common = (
-            self._i32(width),
-            self._i32(height),
-            self._f32(sigma),
-            self._i32(radius),
-        )
+        width_t = self._i32(width)
+        height_t = self._i32(height)
         count = width * height
         self._dispatch(
-            self._kernels.gaussian_horizontal,
-            (image, temporary, *args_common),
+            horizontal_kernel,
+            (image, temporary, width_t, height_t),
             threads=count,
             keepalive=keepalive,
         )
         self._dispatch(
-            self._kernels.gaussian_vertical,
-            (temporary, output, *args_common),
+            vertical_kernel,
+            (temporary, output, width_t, height_t),
             threads=count,
             keepalive=keepalive,
         )
@@ -177,7 +166,7 @@ class MetalSiftDetector:
         height: int,
         keepalive: list[torch.Tensor],
     ) -> tuple[torch.Tensor, int, int]:
-        """Match Kornia pyrdown: 5x5 Gaussian pyramid blur, then bilinear resize."""
+        """Match Kornia pyrdown: fixed 5x5 Gaussian blur, then bilinear resize."""
         count = width * height
         temporary = torch.empty_like(image)
         blurred = torch.empty_like(image)
@@ -222,24 +211,29 @@ class MetalSiftDetector:
     ) -> torch.Tensor:
         """Run BlobDoGSingle(1.0, 1.6) followed by positive 15x15 NMS."""
         count = width * height
-        blur1 = self._gaussian(
+        blur1 = self._fixed_gaussian(
             image,
             width,
             height,
-            self._DOG_SIGMA1,
-            self._DOG_RADIUS1,
+            self._kernels.gaussian_sigma1_horizontal,
+            self._kernels.gaussian_sigma1_vertical,
             keepalive,
         )
-        blur2 = self._gaussian(
+        blur2 = self._fixed_gaussian(
             image,
             width,
             height,
-            self._DOG_SIGMA2,
-            self._DOG_RADIUS2,
+            self._kernels.gaussian_sigma2_horizontal,
+            self._kernels.gaussian_sigma2_vertical,
             keepalive,
         )
         response = torch.empty_like(image)
+        horizontal_max = torch.empty_like(image)
         nms_response = torch.empty_like(image)
+        width_t = self._i32(width)
+        height_t = self._i32(height)
+        border_t = self._i32(self._NMS_BORDER)
+
         self._dispatch(
             self._kernels.difference_of_gaussians,
             (blur1, blur2, response, self._i32(count)),
@@ -247,15 +241,22 @@ class MetalSiftDetector:
             keepalive=keepalive,
         )
         self._dispatch(
-            self._kernels.nms15_positive,
+            self._kernels.max_filter15_horizontal,
+            (response, horizontal_max, width_t, height_t, border_t),
+            threads=count,
+            keepalive=keepalive,
+        )
+        self._dispatch(
+            self._kernels.nms15_positive_vertical,
             (
                 response,
+                horizontal_max,
                 nms_response,
                 level_counts,
                 self._i32(level_index),
-                self._i32(width),
-                self._i32(height),
-                self._i32(self._NMS_BORDER),
+                width_t,
+                height_t,
+                border_t,
             ),
             threads=count,
             keepalive=keepalive,
@@ -414,8 +415,7 @@ class MetalSiftDetector:
                 )
             )
 
-        # Synchronize once after all handwritten Metal work. The six small counts
-        # let us avoid Kornia's padded/invalid top-k entries when a level is sparse.
+        # One synchronization after all handwritten Metal image processing.
         torch.mps.synchronize()
         counts = tuple(int(value) for value in level_counts.cpu().tolist())
 
