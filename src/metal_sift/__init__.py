@@ -1,4 +1,4 @@
-"""SIFT feature detection implemented with custom Metal kernels."""
+"""Kornia-style multi-resolution DoG feature detection on custom Metal kernels."""
 
 from .detector import MetalSiftDetector, SiftDebugStats, SiftFeatures
 
