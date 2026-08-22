@@ -177,7 +177,12 @@ class GaussianPlyData:
         self,
         device: torch.device | str = "cpu",
     ) -> GaussianData:
-        """Build ``course_3dgs.GaussianData`` using every SH level in the PLY."""
+        """Build renderer data using only the view-independent DC SH term.
+
+        The PLY loader still reads and validates every ``f_rest_*`` coefficient,
+        but camera rendering is temporarily locked to ``sh_levels=1`` while the
+        higher-order PLY SH layout/color mismatch is investigated.
+        """
         if self.f_dc is None:
             raise ValueError("camera rendering requires f_dc_0, f_dc_1, and f_dc_2")
 
@@ -200,7 +205,7 @@ class GaussianPlyData:
             f_rest=f_rest,
             opacity_raw=opacity_raw,
             sigma=sigma,
-            sh_levels=None,
+            sh_levels=1,
         )
 
 
