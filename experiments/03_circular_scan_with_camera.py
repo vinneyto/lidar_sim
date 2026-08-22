@@ -6,9 +6,10 @@ Edit the constants below, then run:
 
 The one-meter orbit is centered at the coordinate origin and lies in the XZ
 plane. Rerun shows the 3DGS scene and a moving camera-frustum pyramid on the
-left, and the spherical-harmonic Metal camera render on the right. The camera
-always looks toward the orbit center and 15 degrees downward, with a stable
-roll-free up direction.
+left, and the spherical-harmonic Metal camera render on the right. A custom
+Metal SIFT detector runs directly on every rendered MPS image and draws its
+strongest keypoints over the camera view. The camera always looks toward the
+orbit center and 15 degrees downward, with a stable roll-free up direction.
 """
 
 import math
@@ -19,6 +20,7 @@ import torch
 from course_3dgs import GaussianData, MetalRenderer
 
 from gs_lidar import CameraIntrinsics, GaussianPlyData
+from metal_sift import MetalSiftDetector, SiftFeatures
 
 PLY_PATH = Path("mug.ply")
 
@@ -37,6 +39,9 @@ CAMERA_NEAR = 0.1
 CAMERA_FAR = 10.0
 CAMERA_FRUSTUM_DEPTH = 0.35
 CAMERA_DOWNWARD_PITCH_DEGREES = 15.0
+
+SIFT_FEATURE_COUNT = 512
+SIFT_POINT_RADIUS = 3.0
 
 RERUN_UP_AXIS = "+Y"
 
@@ -223,13 +228,27 @@ def initialize_rerun(scene: GaussianPlyData) -> None:
     )
 
 
+def feature_labels(features: SiftFeatures) -> list[str]:
+    """Create compact detector metadata labels for optional Rerun inspection."""
+    responses = features.responses.detach().cpu().tolist()
+    scales = features.scales.detach().cpu().tolist()
+    orientations = features.orientations.detach().cpu().tolist()
+    return [
+        f"#{index} response={response:.4g} scale={scale:.2f} angle={math.degrees(angle):.1f}°"
+        for index, (response, scale, angle) in enumerate(
+            zip(responses, scales, orientations)
+        )
+    ]
+
+
 def log_frame(
     step: int,
     c2w: torch.Tensor,
     intrinsics: CameraIntrinsics,
     image: torch.Tensor,
+    features: SiftFeatures,
 ) -> None:
-    """Record the moving camera-frustum pyramid and synchronized image."""
+    """Record the moving camera, synchronized image, and Metal SIFT keypoints."""
     import rerun as rr
 
     rr.set_time("frame", sequence=step)
@@ -247,10 +266,22 @@ def log_frame(
     )
     image_u8 = image.detach().clamp(0, 1).mul(255).to(torch.uint8).cpu().numpy()
     rr.log("camera/render", rr.Image(image_u8))
+    rr.log(
+        "camera/features/metal_sift",
+        rr.Points2D(
+            features.keypoints_xy.detach().cpu().numpy(),
+            radii=SIFT_POINT_RADIUS,
+            colors=[255, 90, 40],
+            labels=feature_labels(features),
+            show_labels=False,
+            keypoint_ids=list(range(features.count)),
+            draw_order=10.0,
+        ),
+    )
 
 
 def run_experiment() -> None:
-    """Render the moving camera at every point on its circular orbit."""
+    """Render the moving camera and detect SIFT features at every orbit step."""
     if ORBIT_RADIUS <= 0 or STEP_SECONDS <= 0 or NUMBER_OF_STEPS < 1:
         raise ValueError("orbit radius, step duration, and step count must be positive")
 
@@ -261,6 +292,7 @@ def run_experiment() -> None:
     camera_intrinsics = create_camera_intrinsics()
     renderer_data = scene.to_renderer_data(device)
     renderer = create_metal_renderer(renderer_data, camera_intrinsics)
+    feature_detector = MetalSiftDetector(num_features=SIFT_FEATURE_COUNT)
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
 
     print(
@@ -273,14 +305,28 @@ def run_experiment() -> None:
     for step in range(NUMBER_OF_STEPS):
         angle = angular_velocity * STEP_SECONDS * step
         c2w = camera_c2w(device, angle)
+
         render_started_at = time.perf_counter()
         image = renderer.render(c2w)
         torch.mps.synchronize()
         render_seconds = time.perf_counter() - render_started_at
-        log_frame(step, c2w, camera_intrinsics, image)
+
+        sift_started_at = time.perf_counter()
+        features = feature_detector.detect(image)
+        torch.mps.synchronize()
+        sift_seconds = time.perf_counter() - sift_started_at
+
+        log_frame(step, c2w, camera_intrinsics, image, features)
+        overflow_suffix = (
+            f", candidate overflow={features.candidate_overflow}"
+            if features.candidate_overflow
+            else ""
+        )
         print(
             f"Rendered frame {step + 1}/{NUMBER_OF_STEPS} "
-            f"in {render_seconds * 1000:.2f} ms (Metal 3DGS)"
+            f"in {render_seconds * 1000:.2f} ms (Metal 3DGS), "
+            f"detected {features.count} SIFT keypoints "
+            f"in {sift_seconds * 1000:.2f} ms (custom Metal){overflow_suffix}"
         )
         if step + 1 < NUMBER_OF_STEPS:
             time.sleep(STEP_SECONDS)
