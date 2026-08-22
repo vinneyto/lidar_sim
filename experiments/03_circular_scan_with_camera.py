@@ -42,6 +42,7 @@ CAMERA_DOWNWARD_PITCH_DEGREES = 15.0
 
 SIFT_FEATURE_COUNT = 512
 SIFT_POINT_RADIUS = 3.0
+SIFT_DEBUG = True
 
 RERUN_UP_AXIS = "+Y"
 
@@ -241,6 +242,27 @@ def feature_labels(features: SiftFeatures) -> list[str]:
     ]
 
 
+def sift_debug_suffix(features: SiftFeatures) -> str:
+    """Format ranking diagnostics that help distinguish detector churn from top-k churn."""
+    stats = features.debug
+    if stats is None:
+        return ""
+    if stats.first_rejected_abs_response is None:
+        return (
+            f", candidates={stats.candidate_count}, "
+            f"weakest |response|={stats.cutoff_abs_response:.6f}, "
+            "top-k limit not reached"
+        )
+    return (
+        f", candidates={stats.candidate_count}, "
+        f"cutoff |response|={stats.cutoff_abs_response:.6f}, "
+        f"next={stats.first_rejected_abs_response:.6f}, "
+        f"gap={stats.boundary_gap:.2e}, "
+        f"near-cutoff={stats.near_cutoff_count}/{stats.selected_count} "
+        f"({stats.near_cutoff_fraction:.1%})"
+    )
+
+
 def log_frame(
     step: int,
     c2w: torch.Tensor,
@@ -292,7 +314,10 @@ def run_experiment() -> None:
     camera_intrinsics = create_camera_intrinsics()
     renderer_data = scene.to_renderer_data(device)
     renderer = create_metal_renderer(renderer_data, camera_intrinsics)
-    feature_detector = MetalSiftDetector(num_features=SIFT_FEATURE_COUNT)
+    feature_detector = MetalSiftDetector(
+        num_features=SIFT_FEATURE_COUNT,
+        debug=SIFT_DEBUG,
+    )
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
 
     print(
@@ -326,7 +351,8 @@ def run_experiment() -> None:
             f"Rendered frame {step + 1}/{NUMBER_OF_STEPS} "
             f"in {render_seconds * 1000:.2f} ms (Metal 3DGS), "
             f"detected {features.count} SIFT keypoints "
-            f"in {sift_seconds * 1000:.2f} ms (custom Metal){overflow_suffix}"
+            f"in {sift_seconds * 1000:.2f} ms (custom Metal)"
+            f"{sift_debug_suffix(features)}{overflow_suffix}"
         )
         if step + 1 < NUMBER_OF_STEPS:
             time.sleep(STEP_SECONDS)
