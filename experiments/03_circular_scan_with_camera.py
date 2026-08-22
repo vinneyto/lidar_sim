@@ -20,10 +20,6 @@ from course_3dgs import GaussianData, MetalRenderer
 
 from gs_lidar import CameraIntrinsics, GaussianPlyData
 
-# -----------------------------------------------------------------------------
-# Experiment configuration — edit these values before running the script.
-# -----------------------------------------------------------------------------
-
 PLY_PATH = Path("mug.ply")
 
 ORBIT_CENTER = (0.0, 0.0, 0.0)
@@ -42,8 +38,6 @@ CAMERA_FAR = 10.0
 CAMERA_FRUSTUM_DEPTH = 0.35
 CAMERA_DOWNWARD_PITCH_DEGREES = 15.0
 
-# Rerun turntable rotation axis. This reconstructed model uses "+Y"
-# (and some exports may need "-Y").
 RERUN_UP_AXIS = "+Y"
 
 
@@ -129,10 +123,7 @@ def create_metal_renderer(
     data: GaussianData,
     intrinsics: CameraIntrinsics,
 ) -> MetalRenderer:
-    """Create the reusable course_3dgs renderer for this fixed camera model."""
-    # The experiment exposes a conventional +Y-up camera. Image rows grow
-    # downward, so the course renderer receives a negative fy just like the
-    # previous lidar_sim-local copy did.
+    """Create the reusable course_3dgs renderer for canonical PLY colors."""
     return MetalRenderer(
         data,
         H=intrinsics.height,
@@ -143,40 +134,7 @@ def create_metal_renderer(
         cy=intrinsics.cy,
         near=intrinsics.near,
         far=intrinsics.far,
-    )
-
-
-def print_color_diagnostics(
-    scene: GaussianPlyData,
-    renderer_data: GaussianData,
-) -> None:
-    """Compare canonical PLY DC colors with effective course renderer colors."""
-    canonical = scene.colors
-    if canonical is None:
-        print("Color debug: PLY has no f_dc color coefficients")
-        return
-
-    # sh_levels=1 is view-independent, so an identity camera is sufficient to
-    # exercise the same sigmoid color convention used by the Metal setup kernel.
-    c2w = torch.eye(
-        4,
-        dtype=torch.float32,
-        device=renderer_data.positions.device,
-    )
-    effective = renderer_data.evaluate_color(c2w).detach().cpu()
-    canonical = canonical.detach().cpu()
-
-    canonical_mean = canonical.mean(dim=0)
-    renderer_mean = effective.mean(dim=0)
-    max_abs_difference = (canonical - effective).abs().max().item()
-
-    print(
-        "Color debug (DC only): "
-        f"canonical mean RGB={canonical_mean.tolist()}, "
-        f"renderer mean RGB={renderer_mean.tolist()}, "
-        f"canonical range=[{canonical.min().item():.4f}, {canonical.max().item():.4f}], "
-        f"renderer range=[{effective.min().item():.4f}, {effective.max().item():.4f}], "
-        f"max |difference|={max_abs_difference:.6g}"
+        color_mode="canonical_3dgs",
     )
 
 
@@ -306,20 +264,17 @@ def run_experiment() -> None:
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
 
     print(
-        f"Loaded {renderer_data.num_gaussians:,} Gaussians; "
-        f"PLY contains {scene.sh_levels} SH level(s), "
-        f"renderer currently uses {renderer_data.sh_levels} level(s) "
-        f"({renderer_data.sh_coefficient_count} coefficients/channel)"
+        f"Loaded {renderer_data.num_gaussians:,} Gaussians with "
+        f"{renderer_data.sh_levels} SH level(s) "
+        f"({renderer_data.sh_coefficient_count} coefficients/channel), "
+        "color mode=canonical_3dgs"
     )
-    print_color_diagnostics(scene, renderer_data)
 
     for step in range(NUMBER_OF_STEPS):
         angle = angular_velocity * STEP_SECONDS * step
         c2w = camera_c2w(device, angle)
         render_started_at = time.perf_counter()
         image = renderer.render(c2w)
-        # course_3dgs intentionally leaves synchronization to the caller. We
-        # synchronize here so the printed timing measures completed GPU work.
         torch.mps.synchronize()
         render_seconds = time.perf_counter() - render_started_at
         log_frame(step, c2w, camera_intrinsics, image)
