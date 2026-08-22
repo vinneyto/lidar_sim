@@ -17,6 +17,8 @@ def test_sift_features_count() -> None:
 def test_sift_debug_stats_near_cutoff_fraction() -> None:
     stats = SiftDebugStats(
         candidate_count=900,
+        per_level_candidate_counts=(300, 220, 160, 100, 70, 50),
+        pyramid_preselected_count=700,
         selected_count=512,
         strongest_abs_response=0.2,
         cutoff_abs_response=0.01,
@@ -37,12 +39,7 @@ def test_detector_rejects_invalid_feature_count_before_device_check() -> None:
     reason="custom Metal kernels require Apple MPS and torch.mps.compile_shader",
 )
 def test_metal_sift_smoke() -> None:
-    detector = MetalSiftDetector(
-        num_features=32,
-        max_octaves=2,
-        max_candidates=1024,
-        debug=True,
-    )
+    detector = MetalSiftDetector(num_features=32, debug=True)
     image = torch.rand((64, 64, 3), device="mps", dtype=torch.float32)
     features = detector.detect(image)
     torch.mps.synchronize()
@@ -55,4 +52,5 @@ def test_metal_sift_smoke() -> None:
     assert features.keypoints_xy.device.type == "mps"
     assert features.responses.device.type == "mps"
     assert features.debug is not None
+    assert len(features.debug.per_level_candidate_counts) == 6
     assert features.debug.candidate_count >= features.count
