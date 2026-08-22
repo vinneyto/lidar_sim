@@ -1,13 +1,20 @@
-"""Compare custom Metal and Kornia DoG feature detectors on the same 3DGS frames.
+"""Compare three DoG feature detector implementations on the same 3DGS frames.
 
 Run with:
 
     uv run python experiments/04_compare_sift_detectors.py
 
-Both detectors implement the detector stage used by Kornia SIFTFeature:
+All three detectors implement the detector stage used by Kornia SIFTFeature:
 MultiResolutionDetector + BlobDoGSingle(1.0, 1.6), without orientation or
-128D descriptor computation. Rerun draws custom Metal detections in green and
-Kornia detections in red over the same rendered camera image.
+128D descriptor computation.
+
+The compared implementations are:
+- custom handwritten Metal kernels: green, largest points;
+- eager Kornia/PyTorch on MPS: red, medium points;
+- Kornia/PyTorch wrapped in torch.compile/Inductor on MPS: blue, smallest points.
+
+The concentric point sizes make coincident detections visible when all three
+implementations find the same feature.
 """
 
 import math
@@ -39,8 +46,9 @@ CAMERA_FRUSTUM_DEPTH = 0.35
 CAMERA_DOWNWARD_PITCH_DEGREES = 15.0
 
 SIFT_FEATURE_COUNT = 512
-METAL_POINT_RADIUS = 5.0
-KORNIA_POINT_RADIUS = 3.0
+METAL_POINT_RADIUS = 6.0
+KORNIA_EAGER_POINT_RADIUS = 4.0
+KORNIA_COMPILED_POINT_RADIUS = 2.0
 
 RERUN_UP_AXIS = "+Y"
 
@@ -225,13 +233,31 @@ def feature_labels(features, detector_name: str) -> list[str]:
     ]
 
 
+def log_features(path: str, features, *, radius: float, color, detector_name: str, draw_order: float) -> None:
+    import rerun as rr
+
+    rr.log(
+        path,
+        rr.Points2D(
+            features.keypoints_xy.detach().cpu().numpy(),
+            radii=radius,
+            colors=color,
+            labels=feature_labels(features, detector_name),
+            show_labels=False,
+            keypoint_ids=list(range(features.count)),
+            draw_order=draw_order,
+        ),
+    )
+
+
 def log_frame(
     step: int,
     c2w: torch.Tensor,
     intrinsics: CameraIntrinsics,
     image: torch.Tensor,
     metal_features,
-    kornia_features,
+    kornia_eager_features,
+    kornia_compiled_features,
 ) -> None:
     import rerun as rr
 
@@ -250,29 +276,63 @@ def log_frame(
     image_u8 = image.detach().clamp(0, 1).mul(255).to(torch.uint8).cpu().numpy()
     rr.log("camera/render", rr.Image(image_u8))
 
-    rr.log(
+    log_features(
         "camera/features/metal",
-        rr.Points2D(
-            metal_features.keypoints_xy.detach().cpu().numpy(),
-            radii=METAL_POINT_RADIUS,
-            colors=[0, 255, 0],
-            labels=feature_labels(metal_features, "Metal"),
-            show_labels=False,
-            keypoint_ids=list(range(metal_features.count)),
-            draw_order=10.0,
-        ),
+        metal_features,
+        radius=METAL_POINT_RADIUS,
+        color=[0, 255, 0],
+        detector_name="Metal",
+        draw_order=10.0,
     )
-    rr.log(
-        "camera/features/kornia",
-        rr.Points2D(
-            kornia_features.keypoints_xy.detach().cpu().numpy(),
-            radii=KORNIA_POINT_RADIUS,
-            colors=[255, 0, 0],
-            labels=feature_labels(kornia_features, "Kornia"),
-            show_labels=False,
-            keypoint_ids=list(range(kornia_features.count)),
-            draw_order=11.0,
-        ),
+    log_features(
+        "camera/features/kornia_eager",
+        kornia_eager_features,
+        radius=KORNIA_EAGER_POINT_RADIUS,
+        color=[255, 0, 0],
+        detector_name="Kornia eager",
+        draw_order=11.0,
+    )
+    log_features(
+        "camera/features/kornia_compiled",
+        kornia_compiled_features,
+        radius=KORNIA_COMPILED_POINT_RADIUS,
+        color=[60, 140, 255],
+        detector_name="Kornia compiled",
+        draw_order=12.0,
+    )
+
+
+def warm_up_detectors(
+    renderer: MetalRenderer,
+    device: torch.device,
+    metal_detector: MetalSiftDetector,
+    kornia_eager_detector: SiftFeatureDetector,
+    kornia_compiled_detector: SiftFeatureDetector,
+) -> None:
+    """Warm every implementation and report torch.compile's one-time cost separately."""
+    warmup_image = renderer.render(camera_c2w(device, 0.0))
+    torch.mps.synchronize()
+
+    metal_detector.detect(warmup_image)
+    torch.mps.synchronize()
+
+    kornia_eager_detector.detect(warmup_image)
+    torch.mps.synchronize()
+
+    compile_started_at = time.perf_counter()
+    try:
+        compiled_features = kornia_compiled_detector.detect(warmup_image)
+        torch.mps.synchronize()
+    except Exception as error:
+        raise RuntimeError(
+            "Kornia torch.compile/Inductor MPS warm-up failed. "
+            "The eager Kornia and custom Metal implementations are unaffected."
+        ) from error
+    compile_seconds = time.perf_counter() - compile_started_at
+
+    print(
+        f"torch.compile/Inductor warm-up completed in {compile_seconds:.2f} s "
+        f"({compiled_features.count} features); compile cost is excluded from frame timings"
     )
 
 
@@ -287,8 +347,13 @@ def run_experiment() -> None:
     camera_intrinsics = create_camera_intrinsics()
     renderer_data = scene.to_renderer_data(device)
     renderer = create_metal_renderer(renderer_data, camera_intrinsics)
+
     metal_detector = MetalSiftDetector(num_features=SIFT_FEATURE_COUNT)
-    kornia_detector = SiftFeatureDetector(num_features=SIFT_FEATURE_COUNT)
+    kornia_eager_detector = SiftFeatureDetector(num_features=SIFT_FEATURE_COUNT)
+    kornia_compiled_detector = SiftFeatureDetector(
+        num_features=SIFT_FEATURE_COUNT,
+        compile_detector=True,
+    )
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
 
     print(
@@ -296,6 +361,14 @@ def run_experiment() -> None:
         f"{renderer_data.sh_levels} SH level(s) "
         f"({renderer_data.sh_coefficient_count} coefficients/channel), "
         "color mode=canonical_3dgs"
+    )
+    print("Warming Metal, Kornia eager, and Kornia torch.compile/Inductor detectors...")
+    warm_up_detectors(
+        renderer,
+        device,
+        metal_detector,
+        kornia_eager_detector,
+        kornia_compiled_detector,
     )
 
     for step in range(NUMBER_OF_STEPS):
@@ -312,10 +385,15 @@ def run_experiment() -> None:
         torch.mps.synchronize()
         metal_seconds = time.perf_counter() - metal_started_at
 
-        kornia_started_at = time.perf_counter()
-        kornia_features = kornia_detector.detect(image)
+        kornia_eager_started_at = time.perf_counter()
+        kornia_eager_features = kornia_eager_detector.detect(image)
         torch.mps.synchronize()
-        kornia_seconds = time.perf_counter() - kornia_started_at
+        kornia_eager_seconds = time.perf_counter() - kornia_eager_started_at
+
+        kornia_compiled_started_at = time.perf_counter()
+        kornia_compiled_features = kornia_compiled_detector.detect(image)
+        torch.mps.synchronize()
+        kornia_compiled_seconds = time.perf_counter() - kornia_compiled_started_at
 
         log_frame(
             step,
@@ -323,13 +401,16 @@ def run_experiment() -> None:
             camera_intrinsics,
             image,
             metal_features,
-            kornia_features,
+            kornia_eager_features,
+            kornia_compiled_features,
         )
         print(
             f"Rendered frame {step + 1}/{NUMBER_OF_STEPS} "
             f"in {render_seconds * 1000:.2f} ms (Metal 3DGS), "
-            f"Metal detector: {metal_features.count} in {metal_seconds * 1000:.2f} ms, "
-            f"Kornia detector: {kornia_features.count} in {kornia_seconds * 1000:.2f} ms"
+            f"Metal: {metal_features.count} in {metal_seconds * 1000:.2f} ms, "
+            f"Kornia eager: {kornia_eager_features.count} in {kornia_eager_seconds * 1000:.2f} ms, "
+            f"Kornia compiled: {kornia_compiled_features.count} "
+            f"in {kornia_compiled_seconds * 1000:.2f} ms"
         )
         if step + 1 < NUMBER_OF_STEPS:
             time.sleep(STEP_SECONDS)
