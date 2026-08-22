@@ -65,7 +65,6 @@ class GaussianPlyData:
         if len({tensor.device for tensor in tensors}) != 1:
             raise ValueError("all PLY tensors must live on the same device")
 
-        # Validate that the file contains a complete set of supported SH levels.
         _ = self.sh_levels
 
     @classmethod
@@ -95,7 +94,6 @@ class GaussianPlyData:
             )
 
         def tensor(columns: list[str]) -> torch.Tensor:
-            # plyfile exposes structured NumPy data; conversion is confined here.
             return torch.stack(
                 [torch.from_numpy(vertex[column].copy()) for column in columns],
                 dim=-1,
@@ -177,16 +175,7 @@ class GaussianPlyData:
         self,
         device: torch.device | str = "cpu",
     ) -> GaussianData:
-        """Build DC-only course renderer data matching canonical PLY colors.
-
-        Canonical Inria PLY colors use ``0.5 + C0 * f_dc`` for the DC term,
-        whereas ``course_3dgs`` applies a sigmoid after evaluating spherical
-        harmonics. For the temporary DC-only rendering mode, prewarp ``f_dc``
-        so that the renderer's sigmoid reproduces the canonical PLY DC color.
-
-        All ``f_rest_*`` values remain loaded and validated on this object for
-        later investigation of higher-order SH conventions.
-        """
+        """Pass canonical PLY SH coefficients to the renderer unchanged."""
         if self.f_dc is None:
             raise ValueError("camera rendering requires f_dc_0, f_dc_1, and f_dc_2")
 
@@ -195,25 +184,21 @@ class GaussianPlyData:
         scale_raw = self.scale_raw.to(device=device, dtype=torch.float32)
         rotations_xyzw = self.rotations_xyzw.to(device=device, dtype=torch.float32)
         opacity_raw = self.opacity_raw.to(device=device, dtype=torch.float32)
-
-        canonical_dc_color = (0.5 + _SH_C0 * self.f_dc).clamp(0, 1)
-        epsilon = torch.finfo(torch.float32).eps
-        canonical_dc_color = canonical_dc_color.clamp(epsilon, 1.0 - epsilon)
-        renderer_f_dc = (
-            torch.logit(
-                canonical_dc_color.to(device=device, dtype=torch.float32)
-            )
-            / _SH_C0
+        f_dc = self.f_dc.to(device=device, dtype=torch.float32)
+        f_rest = (
+            self.f_rest.to(device=device, dtype=torch.float32)
+            if self.f_rest is not None
+            else None
         )
 
         sigma = _build_covariance_xyzw(scale_raw, rotations_xyzw)
         return GaussianData.from_flat_tensors(
             positions=positions,
-            f_dc=renderer_f_dc,
-            f_rest=None,
+            f_dc=f_dc,
+            f_rest=f_rest,
             opacity_raw=opacity_raw,
             sigma=sigma,
-            sh_levels=1,
+            sh_levels=self.sh_levels,
         )
 
 
