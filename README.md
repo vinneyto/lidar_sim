@@ -7,9 +7,12 @@ accumulated Gaussian opacity reaches a configurable threshold**. A Gaussian's
 and not an automatic return.
 
 The CPU implementation is the readable mathematical reference. On Apple
-Silicon, the Metal backend keeps the scene, flat BVH, rays, and outputs in MPS
-tensors and dispatches a custom shader compiled with
-`torch.mps.compile_shader`. It never uses CUDA, MLX, or a native extension.
+Silicon, the Metal LiDAR backend keeps the scene, flat BVH, rays, and outputs in
+MPS tensors and dispatches a custom shader compiled with
+`torch.mps.compile_shader`. It never uses CUDA, MLX, or a native extension. The
+camera experiment reuses the packaged handwritten Metal 3DGS renderer from
+[`vinneyto/course_3dgs`](https://github.com/vinneyto/course_3dgs) instead of
+carrying a second copy of those kernels in this repository.
 
 ## Install and run
 
@@ -20,13 +23,23 @@ uv run pytest
 uv run python experiments/01_basic_scan.py
 # Or animate repeated scans while the LiDAR follows an XZ-plane circle:
 uv run python experiments/02_circular_scan.py
+# Or move a tangential camera and render its 3DGS view with Metal + SH:
+uv run python experiments/03_circular_scan_with_camera.py
 ```
+
+`uv` installs `course-3dgs` directly from its pinned Git commit declared in
+`[tool.uv.sources]`.
 
 The PLY loader deliberately accepts the canonical Inria 3DGS convention:
 `scale_*` are log standard deviations, `opacity` is a logit, and `rot_0..3` is a
-scalar-first `(w,x,y,z)` quaternion. Missing fields cause an explicit error
-rather than guessed interpretation. Internally scales are linear, opacities are
-in `[0,1]`, and normalized quaternions remain scalar-first.
+scalar-first `(w,x,y,z)` quaternion. Missing required geometry fields cause an
+explicit error rather than guessed interpretation. `GaussianPlyData` converts
+rotations once at the file boundary to `(x,y,z,w)`, the order used directly by
+Rerun and by the camera-renderer adapter. It also preserves every complete set
+of `f_rest_*` spherical-harmonic coefficients available in the file. The legacy
+LiDAR-facing `load_gaussian_ply()` API remains unchanged and converts back to a
+`GaussianCloud` with linear scales, `[0,1]` opacities, and scalar-first
+quaternions.
 
 Coordinates are right-handed: `+X` forward, `+Y` left, `+Z` up. Azimuth is
 endpoint-exclusive, so the default `[-π, π)` scan does not duplicate its seam.
@@ -81,7 +94,27 @@ the `scan` timeline. Because this reconstructed scene is Y-up, the experiment
 also rotates the simulator's native Z-up scan pattern so its azimuth plane is
 parallel to the XZ tabletop/orbit plane.
 
-For diagnosing backend instability, every run also writes
+The third experiment contains no LiDAR simulation. A pinhole camera follows the
+same circular trajectory while a wireframe frustum pyramid marks its current
+pose in the 3D view. The synchronized Metal 3DGS render appears on the right at
+`1280×960`. The camera always points toward the center of the circular
+trajectory and 15° downward, keeping the well-reconstructed central object in
+view. `GaussianPlyData` loads PLY rotations into `(x,y,z,w)` exactly once; the
+same values are sent to Rerun and used to build renderer covariance. Its
+`to_renderer_data()` adapter produces `course_3dgs.GaussianData` and selects all
+complete spherical-harmonic levels found in `f_rest_*` (up to the renderer's
+current four levels / 16 coefficients per channel). The camera keeps a
+right-handed `+X`-right/`+Y`-up/`+Z`-forward basis and clips geometry outside
+`0.1–10 m`.
+
+The camera rasterizer itself now comes from the `course-3dgs` dependency. Its
+projection, SH evaluation, covariance projection, tile binning, radix sorting,
+and tile rasterization run through custom Metal kernels; PyTorch owns and
+dispatches the MPS buffers. `MetalRenderer.render()` is asynchronous at the API
+boundary, so experiment 03 calls `torch.mps.synchronize()` before recording the
+per-frame render time.
+
+For diagnosing LiDAR backend instability, the second experiment also writes
 `circular_scan_debug.jsonl`. It contains the exact pose, hit and overflow
 counts, output fingerprints, range/alpha summaries, per-elevation-row hit
 counts, and differences from the preceding scan. Attach this file when
