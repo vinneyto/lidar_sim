@@ -7,6 +7,7 @@ from .lidar import LidarConfig, LidarPose, generate_rays
 from .loader import GaussianPlyData, load_gaussian_ply
 from .metal_tracer import MetalLidarTracer
 from .scan import LidarScan
+from .sift_features import SiftFeatureDetector, SiftFeatures
 from .simulator import LidarSimulator
 
 __all__ = [
@@ -20,6 +21,8 @@ __all__ = [
     "LidarScan",
     "LidarSimulator",
     "MetalLidarTracer",
+    "SiftFeatureDetector",
+    "SiftFeatures",
     "build_bvh",
     "gaussian_aabbs",
     "generate_rays",
