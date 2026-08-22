@@ -146,6 +146,40 @@ def create_metal_renderer(
     )
 
 
+def print_color_diagnostics(
+    scene: GaussianPlyData,
+    renderer_data: GaussianData,
+) -> None:
+    """Compare canonical PLY DC colors with effective course renderer colors."""
+    canonical = scene.colors
+    if canonical is None:
+        print("Color debug: PLY has no f_dc color coefficients")
+        return
+
+    # sh_levels=1 is view-independent, so an identity camera is sufficient to
+    # exercise the same sigmoid color convention used by the Metal setup kernel.
+    c2w = torch.eye(
+        4,
+        dtype=torch.float32,
+        device=renderer_data.positions.device,
+    )
+    effective = renderer_data.evaluate_color(c2w).detach().cpu()
+    canonical = canonical.detach().cpu()
+
+    canonical_mean = canonical.mean(dim=0)
+    renderer_mean = effective.mean(dim=0)
+    max_abs_difference = (canonical - effective).abs().max().item()
+
+    print(
+        "Color debug (DC only): "
+        f"canonical mean RGB={canonical_mean.tolist()}, "
+        f"renderer mean RGB={renderer_mean.tolist()}, "
+        f"canonical range=[{canonical.min().item():.4f}, {canonical.max().item():.4f}], "
+        f"renderer range=[{effective.min().item():.4f}, {effective.max().item():.4f}], "
+        f"max |difference|={max_abs_difference:.6g}"
+    )
+
+
 def camera_frustum_line_strips(
     c2w: torch.Tensor,
     intrinsics: CameraIntrinsics,
@@ -272,10 +306,12 @@ def run_experiment() -> None:
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
 
     print(
-        f"Loaded {renderer_data.num_gaussians:,} Gaussians with "
-        f"{renderer_data.sh_levels} SH level(s) "
+        f"Loaded {renderer_data.num_gaussians:,} Gaussians; "
+        f"PLY contains {scene.sh_levels} SH level(s), "
+        f"renderer currently uses {renderer_data.sh_levels} level(s) "
         f"({renderer_data.sh_coefficient_count} coefficients/channel)"
     )
+    print_color_diagnostics(scene, renderer_data)
 
     for step in range(NUMBER_OF_STEPS):
         angle = angular_velocity * STEP_SECONDS * step
