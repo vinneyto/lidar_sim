@@ -86,7 +86,7 @@ def test_camera_intrinsics_use_requested_clipping_planes():
     assert intrinsics.cy == intrinsics.height / 2
 
 
-def test_ply_data_uses_xyzw_and_preserves_all_available_sh(tmp_path):
+def test_ply_data_preserves_all_sh_but_renderer_is_locked_to_dc(tmp_path):
     path = tmp_path / "scene.ply"
     _write_test_ply(path, sh_levels=4)
 
@@ -95,21 +95,21 @@ def test_ply_data_uses_xyzw_and_preserves_all_available_sh(tmp_path):
     lidar_scene = scene.to_gaussian_cloud()
 
     assert scene.sh_levels == 4
+    assert scene.f_rest is not None
+    assert scene.f_rest.shape == (1, 45)
+    torch.testing.assert_close(scene.f_rest[0, :3], torch.tensor([0.0, 1.0, 2.0]))
+    torch.testing.assert_close(scene.f_rest[0, -3:], torch.tensor([42.0, 43.0, 44.0]))
     torch.testing.assert_close(
         scene.rotations_xyzw, torch.tensor([[0.0, 0.0, 0.0, 1.0]])
     )
-    assert renderer_data.sh_levels == 4
-    assert renderer_data.sh_coefficient_count == 16
-    assert renderer_data.sh_coefficients.shape == (1, 16, 3)
+
+    # Higher-order SH stays loaded in GaussianPlyData, but camera rendering is
+    # temporarily forced to the view-independent DC coefficient only.
+    assert renderer_data.sh_levels == 1
+    assert renderer_data.sh_coefficient_count == 1
+    assert renderer_data.sh_coefficients.shape == (1, 1, 3)
     torch.testing.assert_close(
         renderer_data.sh_coefficients[0, 0], torch.tensor([0.1, 0.2, 0.3])
-    )
-    # f_rest is channel-major in canonical Inria PLY files.
-    torch.testing.assert_close(
-        renderer_data.sh_coefficients[0, 1], torch.tensor([0.0, 15.0, 30.0])
-    )
-    torch.testing.assert_close(
-        renderer_data.sh_coefficients[0, 15], torch.tensor([14.0, 29.0, 44.0])
     )
     torch.testing.assert_close(
         renderer_data.sigma,
@@ -123,14 +123,16 @@ def test_ply_data_uses_xyzw_and_preserves_all_available_sh(tmp_path):
     )
 
 
-def test_ply_data_infers_lower_complete_sh_level(tmp_path):
+def test_ply_data_infers_lower_sh_level_but_renderer_stays_dc_only(tmp_path):
     path = tmp_path / "scene_l2.ply"
     _write_test_ply(path, sh_levels=3)
 
     scene = GaussianPlyData.from_ply(path)
+    renderer_data = scene.to_renderer_data()
 
     assert scene.sh_levels == 3
-    assert scene.to_renderer_data().sh_coefficients.shape == (1, 9, 3)
+    assert renderer_data.sh_levels == 1
+    assert renderer_data.sh_coefficients.shape == (1, 1, 3)
 
 
 def test_create_metal_renderer_uses_course_renderer_and_flips_fy(monkeypatch):
