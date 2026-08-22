@@ -14,6 +14,7 @@ class SiftDebugStats:
     """Small CPU-side diagnostic summary for one detector invocation."""
 
     candidate_count: int
+    spatial_survivor_count: int
     selected_count: int
     strongest_abs_response: float
     cutoff_abs_response: float
@@ -50,9 +51,9 @@ class MetalSiftDetector:
     The custom kernels perform RGB-to-gray conversion, separable Gaussian
     filtering, octave downsampling, Difference-of-Gaussian construction,
     26-neighbour extrema detection, iterative 3D quadratic sub-pixel/scale
-    localization, contrast rejection, Hessian edge rejection, and
-    dominant-orientation estimation. Only final top-k selection uses a native
-    PyTorch MPS operation.
+    localization, contrast rejection, Hessian edge rejection, dominant
+    orientation estimation, and spatial non-maximum suppression. Only final
+    top-k selection uses a native PyTorch MPS operation.
 
     The detector intentionally stops before the 128-dimensional SIFT descriptor:
     the camera experiment only needs stable feature locations to visualize.
@@ -68,6 +69,7 @@ class MetalSiftDetector:
         edge_threshold: float = 10.0,
         max_octaves: int = 4,
         max_candidates: int = 32768,
+        spatial_nms_radius: float = 7.0,
         debug: bool = False,
     ) -> None:
         if num_features < 1:
@@ -86,6 +88,8 @@ class MetalSiftDetector:
             raise ValueError("max_octaves must be positive")
         if max_candidates < num_features:
             raise ValueError("max_candidates must be at least num_features")
+        if spatial_nms_radius <= 0:
+            raise ValueError("spatial_nms_radius must be positive")
         if not torch.backends.mps.is_available() or not hasattr(
             torch.mps, "compile_shader"
         ):
@@ -98,10 +102,14 @@ class MetalSiftDetector:
         self.edge_threshold = edge_threshold
         self.max_octaves = max_octaves
         self.max_candidates = max_candidates
+        self.spatial_nms_radius = spatial_nms_radius
         self.debug = debug
 
-        source = files("metal_sift.metal").joinpath("sift.metal").read_text()
+        metal_files = files("metal_sift.metal")
+        source = metal_files.joinpath("sift.metal").read_text()
+        spatial_nms_source = metal_files.joinpath("spatial_nms.metal").read_text()
         self._kernels = torch.mps.compile_shader(source)
+        self._spatial_kernels = torch.mps.compile_shader(spatial_nms_source)
 
     @staticmethod
     def _i32(value: int) -> torch.Tensor:
@@ -199,6 +207,7 @@ class MetalSiftDetector:
         self,
         *,
         candidate_count: int,
+        spatial_survivor_count: int,
         selected_values: torch.Tensor,
         first_rejected_value: torch.Tensor | None,
     ) -> SiftDebugStats:
@@ -207,6 +216,7 @@ class MetalSiftDetector:
         if selected_count == 0:
             return SiftDebugStats(
                 candidate_count=candidate_count,
+                spatial_survivor_count=spatial_survivor_count,
                 selected_count=0,
                 strongest_abs_response=0.0,
                 cutoff_abs_response=0.0,
@@ -228,11 +238,10 @@ class MetalSiftDetector:
         rejected_value = (
             float(first_rejected_value.item()) if first_rejected_value is not None else None
         )
-        boundary_gap = (
-            cutoff_value - rejected_value if rejected_value is not None else None
-        )
+        boundary_gap = cutoff_value - rejected_value if rejected_value is not None else None
         return SiftDebugStats(
             candidate_count=candidate_count,
+            spatial_survivor_count=spatial_survivor_count,
             selected_count=selected_count,
             strongest_abs_response=strongest_value,
             cutoff_abs_response=cutoff_value,
@@ -391,7 +400,7 @@ class MetalSiftDetector:
 
         # All image processing above is asynchronous custom Metal work. One sync
         # here both protects temporary buffers from allocator reuse and obtains
-        # the compact candidate count required for final top-k selection.
+        # the compact candidate count required for spatial suppression.
         torch.mps.synchronize()
         candidate_count = min(int(counter.item()), self.max_candidates)
         candidate_overflow = int(overflow.item())
@@ -402,6 +411,56 @@ class MetalSiftDetector:
             debug_stats = (
                 SiftDebugStats(
                     candidate_count=0,
+                    spatial_survivor_count=0,
+                    selected_count=0,
+                    strongest_abs_response=0.0,
+                    cutoff_abs_response=0.0,
+                    first_rejected_abs_response=None,
+                    boundary_gap=None,
+                    near_cutoff_count=0,
+                )
+                if self.debug
+                else None
+            )
+            return SiftFeatures(
+                keypoints_xy=empty_points,
+                responses=empty,
+                scales=empty,
+                orientations=empty,
+                candidate_overflow=candidate_overflow,
+                debug=debug_stats,
+            )
+
+        # Kornia's MultiResolutionDetector uses a 15x15 2D NMS window on each
+        # pyramid level. Our detector already has scale-space NMS, but its final
+        # candidate pool can still contain several nearby extrema from different
+        # scales/octaves. Suppress those competitors in original-image coordinates
+        # before global top-k; a 7 px radius approximates half of Kornia's window.
+        spatial_scores = torch.empty(candidate_count, device="mps", dtype=torch.float32)
+        self._dispatch(
+            self._spatial_kernels.suppress_nearby_candidates,
+            (
+                out_x[:candidate_count],
+                out_y[:candidate_count],
+                out_response[:candidate_count],
+                spatial_scores,
+                self._i32(candidate_count),
+                self._f32(self.spatial_nms_radius),
+            ),
+            threads=candidate_count,
+            keepalive=keepalive,
+        )
+        survivor_count_tensor = (spatial_scores > 0).sum()
+        torch.mps.synchronize()
+        spatial_survivor_count = int(survivor_count_tensor.item())
+
+        if spatial_survivor_count == 0:
+            empty_points = torch.empty((0, 2), device="mps", dtype=torch.float32)
+            empty = torch.empty(0, device="mps", dtype=torch.float32)
+            debug_stats = (
+                SiftDebugStats(
+                    candidate_count=candidate_count,
+                    spatial_survivor_count=0,
                     selected_count=0,
                     strongest_abs_response=0.0,
                     cutoff_abs_response=0.0,
@@ -422,29 +481,18 @@ class MetalSiftDetector:
             )
 
         responses = out_response[:candidate_count]
-        abs_responses = responses.abs()
-        keep_count = min(self.num_features, candidate_count)
-        first_rejected_value: torch.Tensor | None = None
-
-        if candidate_count > keep_count:
-            # In debug mode request one extra value. Rank K+1 tells us whether
-            # the K/K+1 boundary is razor-thin and therefore likely to churn.
-            ranked_count = keep_count + 1 if self.debug else keep_count
-            ranked = torch.topk(
-                abs_responses, ranked_count, largest=True, sorted=True
-            )
-            indices = ranked.indices[:keep_count]
-            selected_values = ranked.values[:keep_count]
-            if self.debug:
-                first_rejected_value = ranked.values[keep_count]
-        else:
-            ranked = torch.sort(abs_responses, descending=True)
-            indices = ranked.indices
-            selected_values = ranked.values
+        keep_count = min(self.num_features, spatial_survivor_count)
+        request_extra = self.debug and spatial_survivor_count > keep_count
+        ranked_count = keep_count + 1 if request_extra else keep_count
+        ranked = torch.topk(spatial_scores, ranked_count, largest=True, sorted=True)
+        indices = ranked.indices[:keep_count]
+        selected_values = ranked.values[:keep_count]
+        first_rejected_value = ranked.values[keep_count] if request_extra else None
 
         debug_stats = (
             self._debug_stats(
                 candidate_count=candidate_count,
+                spatial_survivor_count=spatial_survivor_count,
                 selected_values=selected_values,
                 first_rejected_value=first_rejected_value,
             )
