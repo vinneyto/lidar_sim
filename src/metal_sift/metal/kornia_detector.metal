@@ -11,6 +11,13 @@ inline int reflect_index(int index, int size) {
     return value < size ? value : period - value;
 }
 
+inline float pyramid_weight(int offset) {
+    int distance = abs(offset);
+    if (distance == 0) return 6.0f;
+    if (distance == 1) return 4.0f;
+    return 1.0f;
+}
+
 kernel void rgb_to_gray(
     constant float *rgb [[buffer(0)]],
     device float *gray [[buffer(1)]],
@@ -19,7 +26,10 @@ kernel void rgb_to_gray(
     uint gid [[thread_position_in_grid]]) {
     if (gid >= uint(pixel_count)) return;
     uint base = gid * uint(channels);
-    gray[gid] = 0.299f * rgb[base] + 0.587f * rgb[base + 1] + 0.114f * rgb[base + 2];
+    float r = clamp(rgb[base], 0.0f, 1.0f);
+    float g = clamp(rgb[base + 1], 0.0f, 1.0f);
+    float b = clamp(rgb[base + 2], 0.0f, 1.0f);
+    gray[gid] = 0.299f * r + 0.587f * g + 0.114f * b;
 }
 
 kernel void resize_bilinear(
@@ -120,11 +130,10 @@ kernel void pyramid_blur5_horizontal(
     if (gid >= uint(count)) return;
     int x = int(gid) % width;
     int y = int(gid) / width;
-    constant float weights[5] = {1.0f, 4.0f, 6.0f, 4.0f, 1.0f};
     float sum = 0.0f;
-    for (int i = -2; i <= 2; ++i) {
-        int sx = reflect_index(x + i, width);
-        sum += weights[i + 2] * src[y * width + sx];
+    for (int offset = -2; offset <= 2; ++offset) {
+        int sx = reflect_index(x + offset, width);
+        sum += pyramid_weight(offset) * src[y * width + sx];
     }
     dst[gid] = sum * (1.0f / 16.0f);
 }
@@ -139,11 +148,10 @@ kernel void pyramid_blur5_vertical(
     if (gid >= uint(count)) return;
     int x = int(gid) % width;
     int y = int(gid) / width;
-    constant float weights[5] = {1.0f, 4.0f, 6.0f, 4.0f, 1.0f};
     float sum = 0.0f;
-    for (int i = -2; i <= 2; ++i) {
-        int sy = reflect_index(y + i, height);
-        sum += weights[i + 2] * src[sy * width + x];
+    for (int offset = -2; offset <= 2; ++offset) {
+        int sy = reflect_index(y + offset, height);
+        sum += pyramid_weight(offset) * src[sy * width + x];
     }
     dst[gid] = sum * (1.0f / 16.0f);
 }
