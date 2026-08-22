@@ -42,6 +42,7 @@ CAMERA_DOWNWARD_PITCH_DEGREES = 15.0
 
 SIFT_FEATURE_COUNT = 512
 SIFT_POINT_RADIUS = 3.0
+SIFT_SPATIAL_NMS_RADIUS = 7.0
 SIFT_DEBUG = True
 
 RERUN_UP_AXIS = "+Y"
@@ -247,15 +248,17 @@ def sift_debug_suffix(features: SiftFeatures) -> str:
     stats = features.debug
     if stats is None:
         return ""
+    counts = (
+        f", candidates={stats.candidate_count}, "
+        f"after-spatial-nms={stats.spatial_survivor_count}"
+    )
     if stats.first_rejected_abs_response is None:
         return (
-            f", candidates={stats.candidate_count}, "
-            f"weakest |response|={stats.cutoff_abs_response:.6f}, "
+            f"{counts}, weakest |response|={stats.cutoff_abs_response:.6f}, "
             "top-k limit not reached"
         )
     return (
-        f", candidates={stats.candidate_count}, "
-        f"cutoff |response|={stats.cutoff_abs_response:.6f}, "
+        f"{counts}, cutoff |response|={stats.cutoff_abs_response:.6f}, "
         f"next={stats.first_rejected_abs_response:.6f}, "
         f"gap={stats.boundary_gap:.2e}, "
         f"near-cutoff={stats.near_cutoff_count}/{stats.selected_count} "
@@ -316,6 +319,7 @@ def run_experiment() -> None:
     renderer = create_metal_renderer(renderer_data, camera_intrinsics)
     feature_detector = MetalSiftDetector(
         num_features=SIFT_FEATURE_COUNT,
+        spatial_nms_radius=SIFT_SPATIAL_NMS_RADIUS,
         debug=SIFT_DEBUG,
     )
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
