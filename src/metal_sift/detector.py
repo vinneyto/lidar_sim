@@ -10,6 +10,25 @@ import torch
 
 
 @dataclass(frozen=True)
+class SiftDebugStats:
+    """Small CPU-side diagnostic summary for one detector invocation."""
+
+    candidate_count: int
+    selected_count: int
+    strongest_abs_response: float
+    cutoff_abs_response: float
+    first_rejected_abs_response: float | None
+    boundary_gap: float | None
+    near_cutoff_count: int
+
+    @property
+    def near_cutoff_fraction(self) -> float:
+        if self.selected_count == 0:
+            return 0.0
+        return self.near_cutoff_count / self.selected_count
+
+
+@dataclass(frozen=True)
 class SiftFeatures:
     """Detected SIFT keypoints kept on the input image's MPS device."""
 
@@ -18,6 +37,7 @@ class SiftFeatures:
     scales: torch.Tensor
     orientations: torch.Tensor
     candidate_overflow: int = 0
+    debug: SiftDebugStats | None = None
 
     @property
     def count(self) -> int:
@@ -48,6 +68,7 @@ class MetalSiftDetector:
         edge_threshold: float = 10.0,
         max_octaves: int = 4,
         max_candidates: int = 32768,
+        debug: bool = False,
     ) -> None:
         if num_features < 1:
             raise ValueError("num_features must be positive")
@@ -77,6 +98,7 @@ class MetalSiftDetector:
         self.edge_threshold = edge_threshold
         self.max_octaves = max_octaves
         self.max_candidates = max_candidates
+        self.debug = debug
 
         source = files("metal_sift.metal").joinpath("sift.metal").read_text()
         self._kernels = torch.mps.compile_shader(source)
@@ -172,6 +194,52 @@ class MetalSiftDetector:
             keepalive=keepalive,
         )
         return output, next_width, next_height
+
+    def _debug_stats(
+        self,
+        *,
+        candidate_count: int,
+        selected_values: torch.Tensor,
+        first_rejected_value: torch.Tensor | None,
+    ) -> SiftDebugStats:
+        """Read only a few ranking scalars needed to diagnose top-k churn."""
+        selected_count = int(selected_values.shape[0])
+        if selected_count == 0:
+            return SiftDebugStats(
+                candidate_count=candidate_count,
+                selected_count=0,
+                strongest_abs_response=0.0,
+                cutoff_abs_response=0.0,
+                first_rejected_abs_response=None,
+                boundary_gap=None,
+                near_cutoff_count=0,
+            )
+
+        strongest = selected_values[0]
+        cutoff = selected_values[-1]
+        # A large population whose response is within 5% of the cutoff means
+        # tiny frame-to-frame response changes can reshuffle many features around
+        # rank num_features even when the underlying extrema remain stable.
+        near_cutoff = (selected_values <= cutoff * 1.05).sum()
+        torch.mps.synchronize()
+
+        strongest_value = float(strongest.item())
+        cutoff_value = float(cutoff.item())
+        rejected_value = (
+            float(first_rejected_value.item()) if first_rejected_value is not None else None
+        )
+        boundary_gap = (
+            cutoff_value - rejected_value if rejected_value is not None else None
+        )
+        return SiftDebugStats(
+            candidate_count=candidate_count,
+            selected_count=selected_count,
+            strongest_abs_response=strongest_value,
+            cutoff_abs_response=cutoff_value,
+            first_rejected_abs_response=rejected_value,
+            boundary_gap=boundary_gap,
+            near_cutoff_count=int(near_cutoff.item()),
+        )
 
     def detect(self, image: torch.Tensor) -> SiftFeatures:
         """Detect up to ``num_features`` strongest SIFT keypoints in an RGB image.
@@ -331,22 +399,58 @@ class MetalSiftDetector:
         if candidate_count == 0:
             empty_points = torch.empty((0, 2), device="mps", dtype=torch.float32)
             empty = torch.empty(0, device="mps", dtype=torch.float32)
+            debug_stats = (
+                SiftDebugStats(
+                    candidate_count=0,
+                    selected_count=0,
+                    strongest_abs_response=0.0,
+                    cutoff_abs_response=0.0,
+                    first_rejected_abs_response=None,
+                    boundary_gap=None,
+                    near_cutoff_count=0,
+                )
+                if self.debug
+                else None
+            )
             return SiftFeatures(
                 keypoints_xy=empty_points,
                 responses=empty,
                 scales=empty,
                 orientations=empty,
                 candidate_overflow=candidate_overflow,
+                debug=debug_stats,
             )
 
         responses = out_response[:candidate_count]
+        abs_responses = responses.abs()
         keep_count = min(self.num_features, candidate_count)
+        first_rejected_value: torch.Tensor | None = None
+
         if candidate_count > keep_count:
-            indices = torch.topk(
-                responses.abs(), keep_count, largest=True, sorted=True
-            ).indices
+            # In debug mode request one extra value. Rank K+1 tells us whether
+            # the K/K+1 boundary is razor-thin and therefore likely to churn.
+            ranked_count = keep_count + 1 if self.debug else keep_count
+            ranked = torch.topk(
+                abs_responses, ranked_count, largest=True, sorted=True
+            )
+            indices = ranked.indices[:keep_count]
+            selected_values = ranked.values[:keep_count]
+            if self.debug:
+                first_rejected_value = ranked.values[keep_count]
         else:
-            indices = torch.argsort(responses.abs(), descending=True)
+            ranked = torch.sort(abs_responses, descending=True)
+            indices = ranked.indices
+            selected_values = ranked.values
+
+        debug_stats = (
+            self._debug_stats(
+                candidate_count=candidate_count,
+                selected_values=selected_values,
+                first_rejected_value=first_rejected_value,
+            )
+            if self.debug
+            else None
+        )
 
         return SiftFeatures(
             keypoints_xy=torch.stack(
@@ -356,4 +460,5 @@ class MetalSiftDetector:
             scales=out_scale[:candidate_count][indices],
             orientations=out_orientation[:candidate_count][indices],
             candidate_overflow=candidate_overflow,
+            debug=debug_stats,
         )
