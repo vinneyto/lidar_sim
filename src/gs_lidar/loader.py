@@ -157,7 +157,7 @@ class GaussianPlyData:
 
     @property
     def colors(self) -> torch.Tensor | None:
-        """Return the view-independent DC color used for the Rerun overview."""
+        """Return the canonical view-independent DC color used by the PLY."""
         if self.f_dc is None:
             return None
         return (0.5 + _SH_C0 * self.f_dc).clamp(0, 1)
@@ -177,11 +177,15 @@ class GaussianPlyData:
         self,
         device: torch.device | str = "cpu",
     ) -> GaussianData:
-        """Build renderer data using only the view-independent DC SH term.
+        """Build DC-only course renderer data matching canonical PLY colors.
 
-        The PLY loader still reads and validates every ``f_rest_*`` coefficient,
-        but camera rendering is temporarily locked to ``sh_levels=1`` while the
-        higher-order PLY SH layout/color mismatch is investigated.
+        Canonical Inria PLY colors use ``0.5 + C0 * f_dc`` for the DC term,
+        whereas ``course_3dgs`` applies a sigmoid after evaluating spherical
+        harmonics. For the temporary DC-only rendering mode, prewarp ``f_dc``
+        so that the renderer's sigmoid reproduces the canonical PLY DC color.
+
+        All ``f_rest_*`` values remain loaded and validated on this object for
+        later investigation of higher-order SH conventions.
         """
         if self.f_dc is None:
             raise ValueError("camera rendering requires f_dc_0, f_dc_1, and f_dc_2")
@@ -191,18 +195,22 @@ class GaussianPlyData:
         scale_raw = self.scale_raw.to(device=device, dtype=torch.float32)
         rotations_xyzw = self.rotations_xyzw.to(device=device, dtype=torch.float32)
         opacity_raw = self.opacity_raw.to(device=device, dtype=torch.float32)
-        f_dc = self.f_dc.to(device=device, dtype=torch.float32)
-        f_rest = (
-            self.f_rest.to(device=device, dtype=torch.float32)
-            if self.f_rest is not None
-            else None
+
+        canonical_dc_color = (0.5 + _SH_C0 * self.f_dc).clamp(0, 1)
+        epsilon = torch.finfo(torch.float32).eps
+        canonical_dc_color = canonical_dc_color.clamp(epsilon, 1.0 - epsilon)
+        renderer_f_dc = (
+            torch.logit(
+                canonical_dc_color.to(device=device, dtype=torch.float32)
+            )
+            / _SH_C0
         )
 
         sigma = _build_covariance_xyzw(scale_raw, rotations_xyzw)
         return GaussianData.from_flat_tensors(
             positions=positions,
-            f_dc=f_dc,
-            f_rest=f_rest,
+            f_dc=renderer_f_dc,
+            f_rest=None,
             opacity_raw=opacity_raw,
             sigma=sigma,
             sh_levels=1,
