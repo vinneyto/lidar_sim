@@ -108,8 +108,12 @@ def test_ply_data_preserves_all_sh_but_renderer_is_locked_to_dc(tmp_path):
     assert renderer_data.sh_levels == 1
     assert renderer_data.sh_coefficient_count == 1
     assert renderer_data.sh_coefficients.shape == (1, 1, 3)
+    assert scene.colors is not None
     torch.testing.assert_close(
-        renderer_data.sh_coefficients[0, 0], torch.tensor([0.1, 0.2, 0.3])
+        renderer_data.evaluate_color(torch.eye(4)),
+        scene.colors,
+        atol=1e-6,
+        rtol=0,
     )
     torch.testing.assert_close(
         renderer_data.sigma,
@@ -120,6 +124,28 @@ def test_ply_data_preserves_all_sh_but_renderer_is_locked_to_dc(tmp_path):
     # The old LiDAR data model remains wxyz for compatibility.
     torch.testing.assert_close(
         lidar_scene.rotations, torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+    )
+
+
+def test_dc_adapter_matches_canonical_ply_color_in_course_sigmoid_renderer():
+    sh_c0 = 0.28209479177387814
+    target_color = torch.tensor([[0.8, 0.2, 0.9]], dtype=torch.float32)
+    scene = GaussianPlyData(
+        positions=torch.zeros((1, 3)),
+        scale_raw=torch.zeros((1, 3)),
+        rotations_xyzw=torch.tensor([[0.0, 0.0, 0.0, 1.0]]),
+        opacity_raw=torch.zeros(1),
+        f_dc=(target_color - 0.5) / sh_c0,
+        f_rest=None,
+    )
+
+    renderer_data = scene.to_renderer_data()
+
+    torch.testing.assert_close(
+        renderer_data.evaluate_color(torch.eye(4)),
+        target_color,
+        atol=1e-6,
+        rtol=0,
     )
 
 
