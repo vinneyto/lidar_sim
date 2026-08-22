@@ -14,7 +14,8 @@ The compared implementations are:
 - Kornia/PyTorch wrapped in torch.compile/Inductor on MPS: blue, smallest points.
 
 The concentric point sizes make coincident detections visible when all three
-implementations find the same feature.
+implementations find the same feature. Rerun also plots the per-frame 3DGS
+render time and all three detector timings below the camera view.
 """
 
 import math
@@ -178,7 +179,13 @@ def initialize_rerun(scene: GaussianPlyData) -> None:
         rr.blueprint.Blueprint(
             rr.blueprint.Horizontal(
                 rr.blueprint.Spatial3DView(origin="world"),
-                rr.blueprint.Spatial2DView(origin="camera"),
+                rr.blueprint.Vertical(
+                    rr.blueprint.Spatial2DView(origin="camera"),
+                    rr.blueprint.TimeSeriesView(
+                        origin="timings",
+                        name="Frame timings (ms)",
+                    ),
+                ),
             )
         )
     )
@@ -193,6 +200,27 @@ def initialize_rerun(scene: GaussianPlyData) -> None:
     if RERUN_UP_AXIS not in coordinates:
         raise ValueError("RERUN_UP_AXIS must be one of +X, -X, +Y, -Y, +Z, or -Z")
     rr.log("world", coordinates[RERUN_UP_AXIS], static=True)
+
+    rr.log(
+        "timings/3dgs_render",
+        rr.SeriesLine(color=[255, 210, 80], name="3DGS render"),
+        static=True,
+    )
+    rr.log(
+        "timings/metal",
+        rr.SeriesLine(color=[0, 255, 0], name="Metal SIFT"),
+        static=True,
+    )
+    rr.log(
+        "timings/kornia_eager",
+        rr.SeriesLine(color=[255, 0, 0], name="Kornia eager"),
+        static=True,
+    )
+    rr.log(
+        "timings/kornia_compiled",
+        rr.SeriesLine(color=[60, 140, 255], name="Kornia compiled"),
+        static=True,
+    )
 
     def numpy(tensor: torch.Tensor):
         return tensor.detach().cpu().numpy()
@@ -233,7 +261,15 @@ def feature_labels(features, detector_name: str) -> list[str]:
     ]
 
 
-def log_features(path: str, features, *, radius: float, color, detector_name: str, draw_order: float) -> None:
+def log_features(
+    path: str,
+    features,
+    *,
+    radius: float,
+    color,
+    detector_name: str,
+    draw_order: float,
+) -> None:
     import rerun as rr
 
     rr.log(
@@ -258,6 +294,10 @@ def log_frame(
     metal_features,
     kornia_eager_features,
     kornia_compiled_features,
+    render_seconds: float,
+    metal_seconds: float,
+    kornia_eager_seconds: float,
+    kornia_compiled_seconds: float,
 ) -> None:
     import rerun as rr
 
@@ -299,6 +339,14 @@ def log_frame(
         color=[60, 140, 255],
         detector_name="Kornia compiled",
         draw_order=12.0,
+    )
+
+    rr.log("timings/3dgs_render", rr.Scalar(render_seconds * 1000.0))
+    rr.log("timings/metal", rr.Scalar(metal_seconds * 1000.0))
+    rr.log("timings/kornia_eager", rr.Scalar(kornia_eager_seconds * 1000.0))
+    rr.log(
+        "timings/kornia_compiled",
+        rr.Scalar(kornia_compiled_seconds * 1000.0),
     )
 
 
@@ -403,6 +451,10 @@ def run_experiment() -> None:
             metal_features,
             kornia_eager_features,
             kornia_compiled_features,
+            render_seconds,
+            metal_seconds,
+            kornia_eager_seconds,
+            kornia_compiled_seconds,
         )
         print(
             f"Rendered frame {step + 1}/{NUMBER_OF_STEPS} "
