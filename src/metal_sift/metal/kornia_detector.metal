@@ -3,6 +3,36 @@ using namespace metal;
 
 constant float INVALID_SCORE = -3.402823466e+38f;
 
+// Normalized 1D Gaussian kernels matching Kornia's gaussian_blur2d kernel
+// sizes for BlobDoGSingle(1.0, 1.6): 9 taps for sigma=1.0 and 13 for 1.6.
+constant float GAUSS_SIGMA1[9] = {
+    0.0001338306f,
+    0.0044318616f,
+    0.0539911274f,
+    0.2419714457f,
+    0.3989434694f,
+    0.2419714457f,
+    0.0539911274f,
+    0.0044318616f,
+    0.0001338306f,
+};
+
+constant float GAUSS_SIGMA2[13] = {
+    0.0002203804f,
+    0.0018889806f,
+    0.0109555901f,
+    0.0429930011f,
+    0.1141598703f,
+    0.2051081369f,
+    0.2493480813f,
+    0.2051081369f,
+    0.1141598703f,
+    0.0429930011f,
+    0.0109555901f,
+    0.0018889806f,
+    0.0002203804f,
+};
+
 inline int reflect_index(int index, int size) {
     if (size <= 1) return 0;
     int period = 2 * size - 2;
@@ -16,6 +46,10 @@ inline float pyramid_weight(int offset) {
     if (distance == 0) return 6.0f;
     if (distance == 1) return 4.0f;
     return 1.0f;
+}
+
+inline bool inside_detection_border(int x, int y, int width, int height, int border) {
+    return x >= border && y >= border && x < width - border && y < height - border;
 }
 
 kernel void rgb_to_gray(
@@ -32,6 +66,8 @@ kernel void rgb_to_gray(
     gray[gid] = 0.299f * r + 0.587f * g + 0.114f * b;
 }
 
+// align_corners=False bilinear resize, matching Kornia's MultiResolutionDetector
+// resize path for the sqrt(2) upper pyramid level and pyrdown output.
 kernel void resize_bilinear(
     constant float *src [[buffer(0)]],
     device float *dst [[buffer(1)]],
@@ -62,52 +98,76 @@ kernel void resize_bilinear(
     dst[gid] = mix(top, bottom, ty);
 }
 
-kernel void gaussian_horizontal(
+kernel void gaussian_sigma1_horizontal(
     constant float *src [[buffer(0)]],
     device float *dst [[buffer(1)]],
     constant int &width [[buffer(2)]],
     constant int &height [[buffer(3)]],
-    constant float &sigma [[buffer(4)]],
-    constant int &radius [[buffer(5)]],
     uint gid [[thread_position_in_grid]]) {
     int count = width * height;
     if (gid >= uint(count)) return;
     int x = int(gid) % width;
     int y = int(gid) / width;
-    float inv_two_sigma2 = 0.5f / (sigma * sigma);
     float sum = 0.0f;
-    float weight_sum = 0.0f;
-    for (int dx = -radius; dx <= radius; ++dx) {
-        int sx = reflect_index(x + dx, width);
-        float weight = exp(-float(dx * dx) * inv_two_sigma2);
-        sum += weight * src[y * width + sx];
-        weight_sum += weight;
+    for (int offset = -4; offset <= 4; ++offset) {
+        int sx = reflect_index(x + offset, width);
+        sum += GAUSS_SIGMA1[offset + 4] * src[y * width + sx];
     }
-    dst[gid] = sum / weight_sum;
+    dst[gid] = sum;
 }
 
-kernel void gaussian_vertical(
+kernel void gaussian_sigma1_vertical(
     constant float *src [[buffer(0)]],
     device float *dst [[buffer(1)]],
     constant int &width [[buffer(2)]],
     constant int &height [[buffer(3)]],
-    constant float &sigma [[buffer(4)]],
-    constant int &radius [[buffer(5)]],
     uint gid [[thread_position_in_grid]]) {
     int count = width * height;
     if (gid >= uint(count)) return;
     int x = int(gid) % width;
     int y = int(gid) / width;
-    float inv_two_sigma2 = 0.5f / (sigma * sigma);
     float sum = 0.0f;
-    float weight_sum = 0.0f;
-    for (int dy = -radius; dy <= radius; ++dy) {
-        int sy = reflect_index(y + dy, height);
-        float weight = exp(-float(dy * dy) * inv_two_sigma2);
-        sum += weight * src[sy * width + x];
-        weight_sum += weight;
+    for (int offset = -4; offset <= 4; ++offset) {
+        int sy = reflect_index(y + offset, height);
+        sum += GAUSS_SIGMA1[offset + 4] * src[sy * width + x];
     }
-    dst[gid] = sum / weight_sum;
+    dst[gid] = sum;
+}
+
+kernel void gaussian_sigma2_horizontal(
+    constant float *src [[buffer(0)]],
+    device float *dst [[buffer(1)]],
+    constant int &width [[buffer(2)]],
+    constant int &height [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+    int count = width * height;
+    if (gid >= uint(count)) return;
+    int x = int(gid) % width;
+    int y = int(gid) / width;
+    float sum = 0.0f;
+    for (int offset = -6; offset <= 6; ++offset) {
+        int sx = reflect_index(x + offset, width);
+        sum += GAUSS_SIGMA2[offset + 6] * src[y * width + sx];
+    }
+    dst[gid] = sum;
+}
+
+kernel void gaussian_sigma2_vertical(
+    constant float *src [[buffer(0)]],
+    device float *dst [[buffer(1)]],
+    constant int &width [[buffer(2)]],
+    constant int &height [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]) {
+    int count = width * height;
+    if (gid >= uint(count)) return;
+    int x = int(gid) % width;
+    int y = int(gid) / width;
+    float sum = 0.0f;
+    for (int offset = -6; offset <= 6; ++offset) {
+        int sy = reflect_index(y + offset, height);
+        sum += GAUSS_SIGMA2[offset + 6] * src[sy * width + x];
+    }
+    dst[gid] = sum;
 }
 
 kernel void difference_of_gaussians(
@@ -120,6 +180,8 @@ kernel void difference_of_gaussians(
     response[gid] = sigma2[gid] - sigma1[gid];
 }
 
+// Kornia pyrdown starts with the standard separable 5x5 Gaussian pyramid
+// filter [1,4,6,4,1] / 16 in each dimension, using reflect padding.
 kernel void pyramid_blur5_horizontal(
     constant float *src [[buffer(0)]],
     device float *dst [[buffer(1)]],
@@ -156,21 +218,51 @@ kernel void pyramid_blur5_vertical(
     dst[gid] = sum * (1.0f / 16.0f);
 }
 
-kernel void nms15_positive(
+// First half of a separable 15x15 max filter. Kornia zeroes a 15-pixel
+// border before NMS, so samples from that removed border participate as zero,
+// not as their original DoG values.
+kernel void max_filter15_horizontal(
     constant float *response [[buffer(0)]],
-    device float *nms_response [[buffer(1)]],
-    device int *level_counts [[buffer(2)]],
-    constant int &level_index [[buffer(3)]],
-    constant int &width [[buffer(4)]],
-    constant int &height [[buffer(5)]],
-    constant int &border [[buffer(6)]],
+    device float *horizontal_max [[buffer(1)]],
+    constant int &width [[buffer(2)]],
+    constant int &height [[buffer(3)]],
+    constant int &border [[buffer(4)]],
     uint gid [[thread_position_in_grid]]) {
     int count = width * height;
     if (gid >= uint(count)) return;
     int x = int(gid) % width;
     int y = int(gid) / width;
 
-    if (x < border || y < border || x >= width - border || y >= height - border) {
+    float maximum = INVALID_SCORE;
+    for (int dx = -7; dx <= 7; ++dx) {
+        int sx = x + dx;
+        float value = 0.0f;
+        if (sx >= 0 && sx < width && inside_detection_border(sx, y, width, height, border)) {
+            value = response[y * width + sx];
+        }
+        maximum = max(maximum, value);
+    }
+    horizontal_max[gid] = maximum;
+}
+
+// Second max-filter pass plus the score threshold / exact-NMS decision.
+// Equal-valued maxima are intentionally retained, matching max-pool-based NMS.
+kernel void nms15_positive_vertical(
+    constant float *response [[buffer(0)]],
+    constant float *horizontal_max [[buffer(1)]],
+    device float *nms_response [[buffer(2)]],
+    device int *level_counts [[buffer(3)]],
+    constant int &level_index [[buffer(4)]],
+    constant int &width [[buffer(5)]],
+    constant int &height [[buffer(6)]],
+    constant int &border [[buffer(7)]],
+    uint gid [[thread_position_in_grid]]) {
+    int count = width * height;
+    if (gid >= uint(count)) return;
+    int x = int(gid) % width;
+    int y = int(gid) / width;
+
+    if (!inside_detection_border(x, y, width, height, border)) {
         nms_response[gid] = INVALID_SCORE;
         return;
     }
@@ -181,15 +273,19 @@ kernel void nms15_positive(
         return;
     }
 
+    float maximum = INVALID_SCORE;
     for (int dy = -7; dy <= 7; ++dy) {
-        for (int dx = -7; dx <= 7; ++dx) {
-            if (dx == 0 && dy == 0) continue;
-            float neighbor = response[(y + dy) * width + (x + dx)];
-            if (neighbor > value) {
-                nms_response[gid] = INVALID_SCORE;
-                return;
-            }
+        int sy = y + dy;
+        float row_max = 0.0f;
+        if (sy >= 0 && sy < height && inside_detection_border(x, sy, width, height, border)) {
+            row_max = horizontal_max[sy * width + x];
         }
+        maximum = max(maximum, row_max);
+    }
+
+    if (value < maximum) {
+        nms_response[gid] = INVALID_SCORE;
+        return;
     }
 
     nms_response[gid] = value;
