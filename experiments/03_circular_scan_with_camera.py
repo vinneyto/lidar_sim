@@ -1,15 +1,11 @@
-"""Render a tangential 3DGS camera while it follows a circular trajectory.
+"""Render a 3DGS camera on a circular trajectory and overlay Metal DoG features.
 
-Edit the constants below, then run:
+Run with:
 
     uv run python experiments/03_circular_scan_with_camera.py
 
-The one-meter orbit is centered at the coordinate origin and lies in the XZ
-plane. Rerun shows the 3DGS scene and a moving camera-frustum pyramid on the
-left, and the spherical-harmonic Metal camera render on the right. A custom
-Metal SIFT detector runs directly on every rendered MPS image and draws its
-strongest keypoints over the camera view. The camera always looks toward the
-orbit center and 15 degrees downward, with a stable roll-free up direction.
+The detector mirrors the detector stage used by the Kornia comparison:
+MultiResolutionDetector + BlobDoGSingle(1.0, 1.6), with PassLAF orientation.
 """
 
 import math
@@ -42,14 +38,12 @@ CAMERA_DOWNWARD_PITCH_DEGREES = 15.0
 
 SIFT_FEATURE_COUNT = 512
 SIFT_POINT_RADIUS = 3.0
-SIFT_SPATIAL_NMS_RADIUS = 7.0
 SIFT_DEBUG = True
 
 RERUN_UP_AXIS = "+Y"
 
 
 def load_scene(path: Path) -> GaussianPlyData:
-    """Load the canonical 3DGS PLY scene used by this camera experiment."""
     if not path.is_file():
         raise FileNotFoundError(
             f"PLY scene not found: {path}. Set PLY_PATH at the top of this file."
@@ -58,27 +52,23 @@ def load_scene(path: Path) -> GaussianPlyData:
 
 
 def select_device() -> torch.device:
-    """Return the MPS device required by the Metal renderer."""
     if not torch.backends.mps.is_available():
         raise RuntimeError("This experiment requires an available PyTorch MPS backend")
     return torch.device("mps")
 
 
 def orbit_position(device: torch.device, angle_radians: float) -> torch.Tensor:
-    """Return a point on the fixed one-meter XZ-plane orbit."""
     center = torch.tensor(ORBIT_CENTER, dtype=torch.float32, device=device)
-    offset = center.new_tensor(
+    return center + center.new_tensor(
         [
             ORBIT_RADIUS * math.cos(angle_radians),
             0.0,
             ORBIT_RADIUS * math.sin(angle_radians),
         ]
     )
-    return center + offset
 
 
 def orbit_points() -> torch.Tensor:
-    """Create a closed polyline describing the fixed camera orbit."""
     center = torch.tensor(ORBIT_CENTER, dtype=torch.float32)
     angles = torch.linspace(0, 2 * math.pi, RING_SAMPLES + 1)
     points = center.expand(RING_SAMPLES + 1, 3).clone()
@@ -88,7 +78,6 @@ def orbit_points() -> torch.Tensor:
 
 
 def camera_c2w(device: torch.device, angle_radians: float) -> torch.Tensor:
-    """Create a roll-free camera looking toward the orbit center and downward."""
     position = orbit_position(device, angle_radians)
     orbit_center = position.new_tensor(ORBIT_CENTER)
     horizontal_forward = orbit_center - position
@@ -113,7 +102,6 @@ def camera_c2w(device: torch.device, angle_radians: float) -> torch.Tensor:
 
 
 def create_camera_intrinsics() -> CameraIntrinsics:
-    """Create the fixed camera used for rendering and the frustum pyramid."""
     return CameraIntrinsics(
         width=CAMERA_WIDTH,
         height=CAMERA_HEIGHT,
@@ -130,7 +118,6 @@ def create_metal_renderer(
     data: GaussianData,
     intrinsics: CameraIntrinsics,
 ) -> MetalRenderer:
-    """Create the reusable course_3dgs renderer for canonical PLY colors."""
     return MetalRenderer(
         data,
         H=intrinsics.height,
@@ -150,7 +137,6 @@ def camera_frustum_line_strips(
     intrinsics: CameraIntrinsics,
     depth: float = CAMERA_FRUSTUM_DEPTH,
 ) -> list[torch.Tensor]:
-    """Return the rectangular base and four sides of a camera-frustum pyramid."""
     if depth <= 0:
         raise ValueError("camera frustum depth must be positive")
 
@@ -166,7 +152,6 @@ def camera_frustum_line_strips(
             [x_left, y_bottom, depth],
         ]
     )
-
     rotation = c2w[:3, :3]
     origin = c2w[:3, 3]
     corners_world = corners_camera @ rotation.T + origin
@@ -176,7 +161,6 @@ def camera_frustum_line_strips(
 
 
 def initialize_rerun(scene: GaussianPlyData) -> None:
-    """Open Rerun and log the immutable scene and circular trajectory."""
     import rerun as rr
 
     rr.init("3dgs-circular-camera", spawn=True)
@@ -231,34 +215,30 @@ def initialize_rerun(scene: GaussianPlyData) -> None:
 
 
 def feature_labels(features: SiftFeatures) -> list[str]:
-    """Create compact detector metadata labels for optional Rerun inspection."""
     responses = features.responses.detach().cpu().tolist()
     scales = features.scales.detach().cpu().tolist()
-    orientations = features.orientations.detach().cpu().tolist()
     return [
-        f"#{index} response={response:.4g} scale={scale:.2f} angle={math.degrees(angle):.1f}°"
-        for index, (response, scale, angle) in enumerate(
-            zip(responses, scales, orientations)
-        )
+        f"#{index} response={response:.4g} scale={scale:.2f}"
+        for index, (response, scale) in enumerate(zip(responses, scales))
     ]
 
 
 def sift_debug_suffix(features: SiftFeatures) -> str:
-    """Format ranking diagnostics that help distinguish detector churn from top-k churn."""
     stats = features.debug
     if stats is None:
         return ""
+    level_counts = "/".join(str(value) for value in stats.per_level_candidate_counts)
     counts = (
-        f", candidates={stats.candidate_count}, "
-        f"after-spatial-nms={stats.spatial_survivor_count}"
+        f", nms-candidates={stats.candidate_count} "
+        f"[{level_counts}], preselected={stats.pyramid_preselected_count}"
     )
     if stats.first_rejected_abs_response is None:
         return (
-            f"{counts}, weakest |response|={stats.cutoff_abs_response:.6f}, "
-            "top-k limit not reached"
+            f"{counts}, weakest response={stats.cutoff_abs_response:.6f}, "
+            "global top-k limit not reached"
         )
     return (
-        f"{counts}, cutoff |response|={stats.cutoff_abs_response:.6f}, "
+        f"{counts}, cutoff response={stats.cutoff_abs_response:.6f}, "
         f"next={stats.first_rejected_abs_response:.6f}, "
         f"gap={stats.boundary_gap:.2e}, "
         f"near-cutoff={stats.near_cutoff_count}/{stats.selected_count} "
@@ -273,18 +253,16 @@ def log_frame(
     image: torch.Tensor,
     features: SiftFeatures,
 ) -> None:
-    """Record the moving camera, synchronized image, and Metal SIFT keypoints."""
     import rerun as rr
 
     rr.set_time("frame", sequence=step)
-    line_strips = [
-        strip.detach().cpu().numpy()
-        for strip in camera_frustum_line_strips(c2w, intrinsics)
-    ]
     rr.log(
         "world/camera/frustum",
         rr.LineStrips3D(
-            line_strips,
+            [
+                strip.detach().cpu().numpy()
+                for strip in camera_frustum_line_strips(c2w, intrinsics)
+            ],
             colors=[80, 160, 255],
             radii=0.01,
         ),
@@ -306,7 +284,6 @@ def log_frame(
 
 
 def run_experiment() -> None:
-    """Render the moving camera and detect SIFT features at every orbit step."""
     if ORBIT_RADIUS <= 0 or STEP_SECONDS <= 0 or NUMBER_OF_STEPS < 1:
         raise ValueError("orbit radius, step duration, and step count must be positive")
 
@@ -319,7 +296,6 @@ def run_experiment() -> None:
     renderer = create_metal_renderer(renderer_data, camera_intrinsics)
     feature_detector = MetalSiftDetector(
         num_features=SIFT_FEATURE_COUNT,
-        spatial_nms_radius=SIFT_SPATIAL_NMS_RADIUS,
         debug=SIFT_DEBUG,
     )
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
@@ -346,17 +322,12 @@ def run_experiment() -> None:
         sift_seconds = time.perf_counter() - sift_started_at
 
         log_frame(step, c2w, camera_intrinsics, image, features)
-        overflow_suffix = (
-            f", candidate overflow={features.candidate_overflow}"
-            if features.candidate_overflow
-            else ""
-        )
         print(
             f"Rendered frame {step + 1}/{NUMBER_OF_STEPS} "
             f"in {render_seconds * 1000:.2f} ms (Metal 3DGS), "
             f"detected {features.count} SIFT keypoints "
-            f"in {sift_seconds * 1000:.2f} ms (custom Metal)"
-            f"{sift_debug_suffix(features)}{overflow_suffix}"
+            f"in {sift_seconds * 1000:.2f} ms (Kornia-style custom Metal)"
+            f"{sift_debug_suffix(features)}"
         )
         if step + 1 < NUMBER_OF_STEPS:
             time.sleep(STEP_SECONDS)
