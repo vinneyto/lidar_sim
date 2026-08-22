@@ -264,9 +264,14 @@ def run_experiment() -> None:
     for step in range(NUMBER_OF_STEPS):
         angle = angular_velocity * STEP_SECONDS * step
         c2w = camera_c2w(device, angle)
+        render_started_at = time.perf_counter()
         image = renderer.render(c2w, camera_intrinsics)
+        render_seconds = time.perf_counter() - render_started_at
         log_frame(step, c2w, camera_intrinsics, image)
-        print(f"Rendered frame {step + 1}/{NUMBER_OF_STEPS}")
+        print(
+            f"Rendered frame {step + 1}/{NUMBER_OF_STEPS} "
+            f"in {render_seconds * 1000:.2f} ms (Metal 3DGS)"
+        )
         if step + 1 < NUMBER_OF_STEPS:
             time.sleep(STEP_SECONDS)
 
