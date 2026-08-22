@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "course-3dgs",
+    "kornia>=0.8.3,<0.9",
     "torch>=2.12.1",
     "plyfile>=1.1",
     "rerun-sdk>=0.22",
