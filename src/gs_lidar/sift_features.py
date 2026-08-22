@@ -20,14 +20,15 @@ class SiftFeatures:
 class SiftFeatureDetector:
     """Run only the DoG detection stage used by Kornia SIFTFeature."""
 
-    def __init__(self, num_features: int = 512) -> None:
+    def __init__(self, num_features: int = 512, *, compile_detector: bool = False) -> None:
         if num_features < 1:
             raise ValueError("num_features must be positive")
 
         self.num_features = num_features
-        self._detectors: dict[torch.device, K.feature.MultiResolutionDetector] = {}
+        self.compile_detector = compile_detector
+        self._detectors: dict[torch.device, torch.nn.Module] = {}
 
-    def _detector(self, device: torch.device) -> K.feature.MultiResolutionDetector:
+    def _detector(self, device: torch.device) -> torch.nn.Module:
         detector = self._detectors.get(device)
         if detector is None:
             detector = K.feature.MultiResolutionDetector(
@@ -37,6 +38,18 @@ class SiftFeatureDetector:
                 aff_module=K.feature.PassLAF(),
             ).to(device)
             detector.eval()
+
+            if self.compile_detector:
+                # Compile the complete Kornia detector module rather than only
+                # BlobDoG/NMS submodules. Inductor may keep graph breaks where
+                # required, but all captured regions target the MPS backend.
+                detector = torch.compile(
+                    detector,
+                    backend="inductor",
+                    dynamic=False,
+                    fullgraph=False,
+                )
+
             self._detectors[device] = detector
         return detector
 
