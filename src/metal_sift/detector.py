@@ -1,4 +1,4 @@
-"""GPU SIFT detector backed by handwritten Metal kernels on PyTorch MPS."""
+"""Kornia-style multi-resolution DoG detector backed by handwritten Metal kernels."""
 
 from __future__ import annotations
 
@@ -11,10 +11,11 @@ import torch
 
 @dataclass(frozen=True)
 class SiftDebugStats:
-    """Small CPU-side diagnostic summary for one detector invocation."""
+    """Diagnostic summary for the Kornia-style multi-resolution detector."""
 
     candidate_count: int
-    spatial_survivor_count: int
+    per_level_candidate_counts: tuple[int, ...]
+    pyramid_preselected_count: int
     selected_count: int
     strongest_abs_response: float
     cutoff_abs_response: float
@@ -31,7 +32,7 @@ class SiftDebugStats:
 
 @dataclass(frozen=True)
 class SiftFeatures:
-    """Detected SIFT keypoints kept on the input image's MPS device."""
+    """Detected keypoints kept on the input image's MPS device."""
 
     keypoints_xy: torch.Tensor
     responses: torch.Tensor
@@ -45,71 +46,53 @@ class SiftFeatures:
         return int(self.keypoints_xy.shape[0])
 
 
+@dataclass(frozen=True)
+class _PyramidLevel:
+    scores: torch.Tensor
+    width: int
+    height: int
+    factor_x: float
+    factor_y: float
+    quota: int
+
+
 class MetalSiftDetector:
-    """SIFT detector whose image-processing stages are handwritten Metal kernels.
+    """Port the detector stage used by the repository's Kornia SIFT experiment.
 
-    The custom kernels perform RGB-to-gray conversion, separable Gaussian
-    filtering, octave downsampling, Difference-of-Gaussian construction,
-    26-neighbour extrema detection, iterative 3D quadratic sub-pixel/scale
-    localization, contrast rejection, Hessian edge rejection, dominant
-    orientation estimation, and spatial non-maximum suppression. Only final
-    top-k selection uses a native PyTorch MPS operation.
+    This intentionally mirrors ``MultiResolutionDetector(BlobDoGSingle(1.0, 1.6))``
+    rather than classical 3D SIFT scale-space extrema localization. The pipeline is:
 
-    The detector intentionally stops before the 128-dimensional SIFT descriptor:
-    the camera experiment only needs stable feature locations to visualize.
+    RGB -> gray -> six image-pyramid levels -> DoG(1.0, 1.6) -> positive 15x15
+    2D NMS -> Kornia-style per-level quotas -> global top-k.
+
+    Resize, pyramid smoothing, Gaussian filters, DoG and NMS are handwritten Metal.
+    Only the small per-level and final top-k operations use native PyTorch MPS.
+    The Kornia comparison used PassLAF for orientation and affine estimation, so
+    orientations returned here are zeros and no 128D descriptor is computed.
     """
 
-    def __init__(
-        self,
-        num_features: int = 512,
-        *,
-        scales_per_octave: int = 3,
-        sigma0: float = 1.6,
-        contrast_threshold: float = 0.04,
-        edge_threshold: float = 10.0,
-        max_octaves: int = 4,
-        max_candidates: int = 32768,
-        spatial_nms_radius: float = 7.0,
-        debug: bool = False,
-    ) -> None:
+    _PYRAMID_LEVELS = 4
+    _UPSCALE_LEVELS = 1
+    _SCALE_FACTOR = math.sqrt(2.0)
+    _MR_SIZE = 22.0
+    _NMS_BORDER = 15
+    _DOG_SIGMA1 = 1.0
+    _DOG_SIGMA2 = 1.6
+    _DOG_RADIUS1 = 4  # Kornia kernel size 9 for sigma=1.0.
+    _DOG_RADIUS2 = 6  # Kornia kernel size 13 for sigma=1.6.
+
+    def __init__(self, num_features: int = 512, *, debug: bool = False) -> None:
         if num_features < 1:
             raise ValueError("num_features must be positive")
-        if scales_per_octave != 3:
-            raise ValueError(
-                "the current Metal refinement kernel is specialized for 3 scales per octave"
-            )
-        if sigma0 <= 0:
-            raise ValueError("sigma0 must be positive")
-        if contrast_threshold <= 0:
-            raise ValueError("contrast_threshold must be positive")
-        if edge_threshold <= 0:
-            raise ValueError("edge_threshold must be positive")
-        if max_octaves < 1:
-            raise ValueError("max_octaves must be positive")
-        if max_candidates < num_features:
-            raise ValueError("max_candidates must be at least num_features")
-        if spatial_nms_radius <= 0:
-            raise ValueError("spatial_nms_radius must be positive")
         if not torch.backends.mps.is_available() or not hasattr(
             torch.mps, "compile_shader"
         ):
             raise RuntimeError("MetalSiftDetector requires MPS and torch.mps.compile_shader")
 
         self.num_features = num_features
-        self.scales_per_octave = scales_per_octave
-        self.sigma0 = sigma0
-        self.contrast_threshold = contrast_threshold
-        self.edge_threshold = edge_threshold
-        self.max_octaves = max_octaves
-        self.max_candidates = max_candidates
-        self.spatial_nms_radius = spatial_nms_radius
         self.debug = debug
-
-        metal_files = files("metal_sift.metal")
-        source = metal_files.joinpath("sift.metal").read_text()
-        spatial_nms_source = metal_files.joinpath("spatial_nms.metal").read_text()
+        source = files("metal_sift.metal").joinpath("kornia_detector.metal").read_text()
         self._kernels = torch.mps.compile_shader(source)
-        self._spatial_kernels = torch.mps.compile_shader(spatial_nms_source)
 
     @staticmethod
     def _i32(value: int) -> torch.Tensor:
@@ -130,93 +113,187 @@ class MetalSiftDetector:
         keepalive.extend(args)
         kernel(*args, threads=threads)
 
-    def _blur(
+    def _resize(
+        self,
+        image: torch.Tensor,
+        src_width: int,
+        src_height: int,
+        dst_width: int,
+        dst_height: int,
+        keepalive: list[torch.Tensor],
+    ) -> torch.Tensor:
+        output = torch.empty(dst_width * dst_height, device="mps", dtype=torch.float32)
+        self._dispatch(
+            self._kernels.resize_bilinear,
+            (
+                image,
+                output,
+                self._i32(src_width),
+                self._i32(src_height),
+                self._i32(dst_width),
+                self._i32(dst_height),
+            ),
+            threads=dst_width * dst_height,
+            keepalive=keepalive,
+        )
+        return output
+
+    def _gaussian(
         self,
         image: torch.Tensor,
         width: int,
         height: int,
         sigma: float,
+        radius: int,
         keepalive: list[torch.Tensor],
     ) -> torch.Tensor:
-        if sigma <= 1e-4:
-            return image
-        radius = max(1, min(16, math.ceil(3.0 * sigma)))
         temporary = torch.empty_like(image)
         output = torch.empty_like(image)
-        width_t = self._i32(width)
-        height_t = self._i32(height)
-        sigma_t = self._f32(sigma)
-        radius_t = self._i32(radius)
+        args_common = (
+            self._i32(width),
+            self._i32(height),
+            self._f32(sigma),
+            self._i32(radius),
+        )
         count = width * height
         self._dispatch(
             self._kernels.gaussian_horizontal,
-            (image, temporary, width_t, height_t, sigma_t, radius_t),
+            (image, temporary, *args_common),
             threads=count,
             keepalive=keepalive,
         )
         self._dispatch(
             self._kernels.gaussian_vertical,
-            (temporary, output, width_t, height_t, sigma_t, radius_t),
+            (temporary, output, *args_common),
             threads=count,
             keepalive=keepalive,
         )
         return output
 
-    def _dog(
-        self,
-        lower: torch.Tensor,
-        upper: torch.Tensor,
-        count: int,
-        keepalive: list[torch.Tensor],
-    ) -> torch.Tensor:
-        output = torch.empty_like(lower)
-        self._dispatch(
-            self._kernels.difference_of_gaussians,
-            (lower, upper, output, self._i32(count)),
-            threads=count,
-            keepalive=keepalive,
-        )
-        return output
-
-    def _downsample(
+    def _pyrdown(
         self,
         image: torch.Tensor,
         width: int,
         height: int,
         keepalive: list[torch.Tensor],
     ) -> tuple[torch.Tensor, int, int]:
-        next_width = max(1, width // 2)
-        next_height = max(1, height // 2)
-        output = torch.empty(next_width * next_height, device="mps", dtype=torch.float32)
+        """Match Kornia pyrdown: 5x5 Gaussian pyramid blur, then bilinear resize."""
+        count = width * height
+        temporary = torch.empty_like(image)
+        blurred = torch.empty_like(image)
+        width_t = self._i32(width)
+        height_t = self._i32(height)
         self._dispatch(
-            self._kernels.downsample_half,
-            (
-                image,
-                output,
-                self._i32(width),
-                self._i32(height),
-                self._i32(next_width),
-                self._i32(next_height),
-            ),
-            threads=next_width * next_height,
+            self._kernels.pyramid_blur5_horizontal,
+            (image, temporary, width_t, height_t),
+            threads=count,
             keepalive=keepalive,
         )
-        return output, next_width, next_height
+        self._dispatch(
+            self._kernels.pyramid_blur5_vertical,
+            (temporary, blurred, width_t, height_t),
+            threads=count,
+            keepalive=keepalive,
+        )
+
+        next_width = max(1, int(width / self._SCALE_FACTOR))
+        next_height = max(1, int(height / self._SCALE_FACTOR))
+        return (
+            self._resize(
+                blurred,
+                width,
+                height,
+                next_width,
+                next_height,
+                keepalive,
+            ),
+            next_width,
+            next_height,
+        )
+
+    def _dog_nms(
+        self,
+        image: torch.Tensor,
+        width: int,
+        height: int,
+        level_counts: torch.Tensor,
+        level_index: int,
+        keepalive: list[torch.Tensor],
+    ) -> torch.Tensor:
+        """Run BlobDoGSingle(1.0, 1.6) followed by positive 15x15 NMS."""
+        count = width * height
+        blur1 = self._gaussian(
+            image,
+            width,
+            height,
+            self._DOG_SIGMA1,
+            self._DOG_RADIUS1,
+            keepalive,
+        )
+        blur2 = self._gaussian(
+            image,
+            width,
+            height,
+            self._DOG_SIGMA2,
+            self._DOG_RADIUS2,
+            keepalive,
+        )
+        response = torch.empty_like(image)
+        nms_response = torch.empty_like(image)
+        self._dispatch(
+            self._kernels.difference_of_gaussians,
+            (blur1, blur2, response, self._i32(count)),
+            threads=count,
+            keepalive=keepalive,
+        )
+        self._dispatch(
+            self._kernels.nms15_positive,
+            (
+                response,
+                nms_response,
+                level_counts,
+                self._i32(level_index),
+                self._i32(width),
+                self._i32(height),
+                self._i32(self._NMS_BORDER),
+            ),
+            threads=count,
+            keepalive=keepalive,
+        )
+        return nms_response
+
+    def _kornia_quotas(self) -> list[int]:
+        """Reproduce MultiResolutionDetector's feature allocation across six levels."""
+        levels = self._PYRAMID_LEVELS + self._UPSCALE_LEVELS + 1
+        factor_points = self._SCALE_FACTOR**2
+        weights = [
+            factor_points ** (-(idx - self._UPSCALE_LEVELS))
+            for idx in range(levels)
+        ]
+        weight_sum = sum(weights)
+        base = [int(self.num_features * weight / weight_sum) for weight in weights]
+
+        # One upscaled level receives base[0]. The original/downsample chain uses
+        # the cumulative quotas from Kornia MultiResolutionDetector.detect().
+        quotas = [base[0]]
+        for idx in range(self._PYRAMID_LEVELS + 1):
+            quotas.append(sum(base[: idx + 1 + self._UPSCALE_LEVELS]))
+        return quotas
 
     def _debug_stats(
         self,
         *,
-        candidate_count: int,
-        spatial_survivor_count: int,
+        counts: tuple[int, ...],
+        pyramid_preselected_count: int,
         selected_values: torch.Tensor,
         first_rejected_value: torch.Tensor | None,
     ) -> SiftDebugStats:
-        """Read only a few ranking scalars needed to diagnose top-k churn."""
         selected_count = int(selected_values.shape[0])
         if selected_count == 0:
             return SiftDebugStats(
-                candidate_count=candidate_count,
-                spatial_survivor_count=spatial_survivor_count,
+                candidate_count=sum(counts),
+                per_level_candidate_counts=counts,
+                pyramid_preselected_count=pyramid_preselected_count,
                 selected_count=0,
                 strongest_abs_response=0.0,
                 cutoff_abs_response=0.0,
@@ -227,36 +304,29 @@ class MetalSiftDetector:
 
         strongest = selected_values[0]
         cutoff = selected_values[-1]
-        # A large population whose response is within 5% of the cutoff means
-        # tiny frame-to-frame response changes can reshuffle many features around
-        # rank num_features even when the underlying extrema remain stable.
         near_cutoff = (selected_values <= cutoff * 1.05).sum()
         torch.mps.synchronize()
-
         strongest_value = float(strongest.item())
         cutoff_value = float(cutoff.item())
         rejected_value = (
             float(first_rejected_value.item()) if first_rejected_value is not None else None
         )
-        boundary_gap = cutoff_value - rejected_value if rejected_value is not None else None
         return SiftDebugStats(
-            candidate_count=candidate_count,
-            spatial_survivor_count=spatial_survivor_count,
+            candidate_count=sum(counts),
+            per_level_candidate_counts=counts,
+            pyramid_preselected_count=pyramid_preselected_count,
             selected_count=selected_count,
             strongest_abs_response=strongest_value,
             cutoff_abs_response=cutoff_value,
             first_rejected_abs_response=rejected_value,
-            boundary_gap=boundary_gap,
+            boundary_gap=(
+                cutoff_value - rejected_value if rejected_value is not None else None
+            ),
             near_cutoff_count=int(near_cutoff.item()),
         )
 
     def detect(self, image: torch.Tensor) -> SiftFeatures:
-        """Detect up to ``num_features`` strongest SIFT keypoints in an RGB image.
-
-        ``image`` must be a contiguous-compatible float32 MPS tensor shaped
-        ``[H, W, C]`` with at least three channels. The returned tensors remain
-        on MPS so callers only need to copy the small final keypoint set to CPU.
-        """
+        """Detect the strongest Kornia-style multi-resolution DoG keypoints."""
         if image.device.type != "mps":
             raise ValueError("image must already reside on the MPS device")
         if image.dtype != torch.float32:
@@ -265,159 +335,115 @@ class MetalSiftDetector:
             raise ValueError("image must have shape [H, W, C] with at least 3 channels")
 
         height, width, channels = map(int, image.shape)
-        if min(width, height) < 16:
-            raise ValueError("image must be at least 16x16 pixels")
+        if min(width, height) < 32:
+            raise ValueError("image must be at least 32x32 pixels")
 
         image = image.contiguous()
         keepalive: list[torch.Tensor] = [image]
-        pixel_count = width * height
-        gray = torch.empty(pixel_count, device="mps", dtype=torch.float32)
+        gray = torch.empty(width * height, device="mps", dtype=torch.float32)
         self._dispatch(
             self._kernels.rgb_to_gray,
-            (
-                image,
-                gray,
-                self._i32(pixel_count),
-                self._i32(channels),
-            ),
-            threads=pixel_count,
+            (image, gray, self._i32(width * height), self._i32(channels)),
+            threads=width * height,
             keepalive=keepalive,
         )
 
-        out_x = torch.empty(self.max_candidates, device="mps", dtype=torch.float32)
-        out_y = torch.empty_like(out_x)
-        out_scale = torch.empty_like(out_x)
-        out_response = torch.empty_like(out_x)
-        out_orientation = torch.empty_like(out_x)
-        counter = torch.zeros(1, device="mps", dtype=torch.int32)
-        overflow = torch.zeros(1, device="mps", dtype=torch.int32)
-        keepalive.extend(
-            [out_x, out_y, out_scale, out_response, out_orientation, counter, overflow]
+        quotas = self._kornia_quotas()
+        level_count = len(quotas)
+        level_counts = torch.zeros(level_count, device="mps", dtype=torch.int32)
+        keepalive.append(level_counts)
+        levels: list[_PyramidLevel] = []
+
+        # Kornia config has one upscaled level at sqrt(2).
+        up_width = int(width * self._SCALE_FACTOR)
+        up_height = int(height * self._SCALE_FACTOR)
+        up_image = self._resize(
+            gray,
+            width,
+            height,
+            up_width,
+            up_height,
+            keepalive,
+        )
+        levels.append(
+            _PyramidLevel(
+                scores=self._dog_nms(
+                    up_image,
+                    up_width,
+                    up_height,
+                    level_counts,
+                    0,
+                    keepalive,
+                ),
+                width=up_width,
+                height=up_height,
+                factor_x=width / up_width,
+                factor_y=height / up_height,
+                quota=quotas[0],
+            )
         )
 
-        k = 2.0 ** (1.0 / self.scales_per_octave)
-        gaussian_level_count = self.scales_per_octave + 3
-        octave_base = gray
-        octave_width = width
-        octave_height = height
-
-        for octave in range(self.max_octaves):
-            if min(octave_width, octave_height) < 16:
-                break
-
-            if octave == 0:
-                assumed_input_sigma = 0.5
-                initial_sigma = math.sqrt(
-                    max(self.sigma0 * self.sigma0 - assumed_input_sigma**2, 1e-8)
-                )
-                gaussian_levels = [
-                    self._blur(
-                        octave_base,
-                        octave_width,
-                        octave_height,
-                        initial_sigma,
-                        keepalive,
-                    )
-                ]
-            else:
-                gaussian_levels = [octave_base]
-
-            for level in range(1, gaussian_level_count):
-                previous_sigma = self.sigma0 * (k ** (level - 1))
-                target_sigma = self.sigma0 * (k**level)
-                incremental_sigma = math.sqrt(
-                    max(target_sigma * target_sigma - previous_sigma * previous_sigma, 1e-8)
-                )
-                gaussian_levels.append(
-                    self._blur(
-                        gaussian_levels[-1],
-                        octave_width,
-                        octave_height,
-                        incremental_sigma,
-                        keepalive,
-                    )
-                )
-
-            octave_count = octave_width * octave_height
-            dogs = [
-                self._dog(
-                    gaussian_levels[level],
-                    gaussian_levels[level + 1],
-                    octave_count,
+        # Original resolution plus four successive Kornia pyrdown(sqrt(2)) levels.
+        current = gray
+        current_width = width
+        current_height = height
+        for pyramid_index in range(self._PYRAMID_LEVELS + 1):
+            if pyramid_index > 0:
+                current, current_width, current_height = self._pyrdown(
+                    current,
+                    current_width,
+                    current_height,
                     keepalive,
                 )
-                for level in range(gaussian_level_count - 1)
-            ]
-            if len(dogs) != 5:
-                raise RuntimeError("the current Metal localization kernel expects five DoG levels")
-
-            coordinate_scale = float(1 << octave)
-            # Every localization dispatch gets all five DoG levels. This lets a
-            # candidate move into a neighbouring scale and repeat its quadratic
-            # fit instead of being discarded when the fitted scale crosses a
-            # half-sample boundary.
-            for dog_level in range(1, self.scales_per_octave + 1):
-                self._dispatch(
-                    self._kernels.detect_extrema,
-                    (
-                        dogs[0],
-                        dogs[1],
-                        dogs[2],
-                        dogs[3],
-                        dogs[4],
-                        gaussian_levels[1],
-                        gaussian_levels[2],
-                        gaussian_levels[3],
-                        out_x,
-                        out_y,
-                        out_scale,
-                        out_response,
-                        out_orientation,
-                        counter,
-                        overflow,
-                        self._i32(octave_width),
-                        self._i32(octave_height),
-                        self._f32(self.contrast_threshold / self.scales_per_octave),
-                        self._f32(self.edge_threshold),
-                        self._f32(self.sigma0),
-                        self._f32(k),
-                        self._f32(coordinate_scale),
-                        self._i32(dog_level),
-                        self._i32(self.max_candidates),
+            level_index = pyramid_index + 1
+            levels.append(
+                _PyramidLevel(
+                    scores=self._dog_nms(
+                        current,
+                        current_width,
+                        current_height,
+                        level_counts,
+                        level_index,
+                        keepalive,
                     ),
-                    threads=octave_count,
-                    keepalive=keepalive,
+                    width=current_width,
+                    height=current_height,
+                    factor_x=width / current_width,
+                    factor_y=height / current_height,
+                    quota=quotas[level_index],
                 )
-
-            if octave + 1 >= self.max_octaves:
-                break
-            octave_base, octave_width, octave_height = self._downsample(
-                gaussian_levels[self.scales_per_octave],
-                octave_width,
-                octave_height,
-                keepalive,
             )
 
-        # All image processing above is asynchronous custom Metal work. One sync
-        # here both protects temporary buffers from allocator reuse and obtains
-        # the compact candidate count required for spatial suppression.
+        # Synchronize once after all handwritten Metal work. The six small counts
+        # let us avoid Kornia's padded/invalid top-k entries when a level is sparse.
         torch.mps.synchronize()
-        candidate_count = min(int(counter.item()), self.max_candidates)
-        candidate_overflow = int(overflow.item())
+        counts = tuple(int(value) for value in level_counts.cpu().tolist())
 
-        if candidate_count == 0:
+        level_points: list[torch.Tensor] = []
+        level_responses: list[torch.Tensor] = []
+        level_scales: list[torch.Tensor] = []
+        for level, candidate_count in zip(levels, counts):
+            keep_count = min(level.quota, candidate_count)
+            if keep_count <= 0:
+                continue
+            ranked = torch.topk(level.scores, keep_count, largest=True, sorted=True)
+            flat = ranked.indices
+            x = (flat % level.width).to(torch.float32) * level.factor_x
+            y = torch.div(flat, level.width, rounding_mode="floor").to(torch.float32) * level.factor_y
+            level_points.append(torch.stack((x, y), dim=1))
+            level_responses.append(ranked.values)
+            scale = 0.5 * (level.factor_x + level.factor_y) * self._MR_SIZE
+            level_scales.append(torch.full_like(ranked.values, scale))
+
+        if not level_responses:
             empty_points = torch.empty((0, 2), device="mps", dtype=torch.float32)
             empty = torch.empty(0, device="mps", dtype=torch.float32)
             debug_stats = (
-                SiftDebugStats(
-                    candidate_count=0,
-                    spatial_survivor_count=0,
-                    selected_count=0,
-                    strongest_abs_response=0.0,
-                    cutoff_abs_response=0.0,
-                    first_rejected_abs_response=None,
-                    boundary_gap=None,
-                    near_cutoff_count=0,
+                self._debug_stats(
+                    counts=counts,
+                    pyramid_preselected_count=0,
+                    selected_values=empty,
+                    first_rejected_value=None,
                 )
                 if self.debug
                 else None
@@ -427,86 +453,43 @@ class MetalSiftDetector:
                 responses=empty,
                 scales=empty,
                 orientations=empty,
-                candidate_overflow=candidate_overflow,
                 debug=debug_stats,
             )
 
-        # Kornia's MultiResolutionDetector uses a 15x15 2D NMS window on each
-        # pyramid level. Our detector already has scale-space NMS, but its final
-        # candidate pool can still contain several nearby extrema from different
-        # scales/octaves. Suppress those competitors in original-image coordinates
-        # before global top-k; a 7 px radius approximates half of Kornia's window.
-        spatial_scores = torch.empty(candidate_count, device="mps", dtype=torch.float32)
-        self._dispatch(
-            self._spatial_kernels.suppress_nearby_candidates,
-            (
-                out_x[:candidate_count],
-                out_y[:candidate_count],
-                out_response[:candidate_count],
-                spatial_scores,
-                self._i32(candidate_count),
-                self._f32(self.spatial_nms_radius),
-            ),
-            threads=candidate_count,
-            keepalive=keepalive,
+        points = torch.cat(level_points, dim=0)
+        responses = torch.cat(level_responses, dim=0)
+        scales = torch.cat(level_scales, dim=0)
+        pyramid_preselected_count = int(responses.shape[0])
+        keep_count = min(self.num_features, pyramid_preselected_count)
+
+        ranked_count = (
+            keep_count + 1
+            if self.debug and pyramid_preselected_count > keep_count
+            else keep_count
         )
-        survivor_count_tensor = (spatial_scores > 0).sum()
-        torch.mps.synchronize()
-        spatial_survivor_count = int(survivor_count_tensor.item())
-
-        if spatial_survivor_count == 0:
-            empty_points = torch.empty((0, 2), device="mps", dtype=torch.float32)
-            empty = torch.empty(0, device="mps", dtype=torch.float32)
-            debug_stats = (
-                SiftDebugStats(
-                    candidate_count=candidate_count,
-                    spatial_survivor_count=0,
-                    selected_count=0,
-                    strongest_abs_response=0.0,
-                    cutoff_abs_response=0.0,
-                    first_rejected_abs_response=None,
-                    boundary_gap=None,
-                    near_cutoff_count=0,
-                )
-                if self.debug
-                else None
-            )
-            return SiftFeatures(
-                keypoints_xy=empty_points,
-                responses=empty,
-                scales=empty,
-                orientations=empty,
-                candidate_overflow=candidate_overflow,
-                debug=debug_stats,
-            )
-
-        responses = out_response[:candidate_count]
-        keep_count = min(self.num_features, spatial_survivor_count)
-        request_extra = self.debug and spatial_survivor_count > keep_count
-        ranked_count = keep_count + 1 if request_extra else keep_count
-        ranked = torch.topk(spatial_scores, ranked_count, largest=True, sorted=True)
+        ranked = torch.topk(responses, ranked_count, largest=True, sorted=True)
         indices = ranked.indices[:keep_count]
         selected_values = ranked.values[:keep_count]
-        first_rejected_value = ranked.values[keep_count] if request_extra else None
+        first_rejected = (
+            ranked.values[keep_count]
+            if self.debug and pyramid_preselected_count > keep_count
+            else None
+        )
 
         debug_stats = (
             self._debug_stats(
-                candidate_count=candidate_count,
-                spatial_survivor_count=spatial_survivor_count,
+                counts=counts,
+                pyramid_preselected_count=pyramid_preselected_count,
                 selected_values=selected_values,
-                first_rejected_value=first_rejected_value,
+                first_rejected_value=first_rejected,
             )
             if self.debug
             else None
         )
-
         return SiftFeatures(
-            keypoints_xy=torch.stack(
-                (out_x[:candidate_count][indices], out_y[:candidate_count][indices]), dim=1
-            ),
+            keypoints_xy=points[indices],
             responses=responses[indices],
-            scales=out_scale[:candidate_count][indices],
-            orientations=out_orientation[:candidate_count][indices],
-            candidate_overflow=candidate_overflow,
+            scales=scales[indices],
+            orientations=torch.zeros_like(selected_values),
             debug=debug_stats,
         )
