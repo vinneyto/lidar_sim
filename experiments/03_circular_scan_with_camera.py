@@ -36,7 +36,7 @@ CAMERA_FAR = 10.0
 CAMERA_FRUSTUM_DEPTH = 0.35
 CAMERA_DOWNWARD_PITCH_DEGREES = 15.0
 
-SIFT_FEATURE_COUNT = 512
+SIFT_FEATURE_COUNT = 768
 SIFT_POINT_RADIUS = 3.0
 SIFT_DEBUG = True
 
@@ -274,7 +274,7 @@ def log_frame(
         rr.Points2D(
             features.keypoints_xy.detach().cpu().numpy(),
             radii=SIFT_POINT_RADIUS,
-            colors=[255, 90, 40],
+            colors=[0, 255, 0],
             labels=feature_labels(features),
             show_labels=False,
             keypoint_ids=list(range(features.count)),
