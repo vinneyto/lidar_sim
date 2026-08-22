@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "Virtual LiDAR for 3D Gaussian Splatting scenes"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["torch>=2.5", "plyfile>=1.1", "rerun-sdk>=0.22"]
+dependencies = [
+    "course-3dgs",
+    "torch>=2.12.1",
+    "plyfile>=1.1",
+    "rerun-sdk>=0.22",
+]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
@@ -19,3 +24,6 @@ packages = ["src/gs_lidar"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.uv.sources]
+course-3dgs = { git = "https://github.com/vinneyto/course_3dgs", rev = "5970ffa5e8daecd7ad34a1401e7fc1d281d07af9" }

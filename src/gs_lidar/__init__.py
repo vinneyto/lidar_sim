@@ -1,10 +1,10 @@
 from .bvh import FlatBVH, build_bvh
+from .camera import CameraIntrinsics
 from .cpu_tracer import CpuLidarTracer
 from .gaussian_cloud import GaussianCloud
 from .gaussian_geometry import gaussian_aabbs
 from .lidar import LidarConfig, LidarPose, generate_rays
-from .loader import load_gaussian_ply
-from .metal_renderer import CameraIntrinsics, MetalGaussianRenderer
+from .loader import GaussianPlyData, load_gaussian_ply
 from .metal_tracer import MetalLidarTracer
 from .scan import LidarScan
 from .simulator import LidarSimulator
@@ -14,11 +14,11 @@ __all__ = [
     "CpuLidarTracer",
     "FlatBVH",
     "GaussianCloud",
+    "GaussianPlyData",
     "LidarConfig",
     "LidarPose",
     "LidarScan",
     "LidarSimulator",
-    "MetalGaussianRenderer",
     "MetalLidarTracer",
     "build_bvh",
     "gaussian_aabbs",

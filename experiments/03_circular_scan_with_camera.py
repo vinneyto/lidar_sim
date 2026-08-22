@@ -6,24 +6,19 @@ Edit the constants below, then run:
 
 The one-meter orbit is centered at the coordinate origin and lies in the XZ
 plane. Rerun shows the 3DGS scene and a moving camera-frustum pyramid on the
-left, and the SH-free Metal camera render on the right. The camera always looks
-toward the orbit center and 15 degrees downward, with a stable roll-free up
-direction.
+left, and the spherical-harmonic Metal camera render on the right. The camera
+always looks toward the orbit center and 15 degrees downward, with a stable
+roll-free up direction.
 """
 
 import math
 import time
-from dataclasses import replace
 from pathlib import Path
 
 import torch
+from course_3dgs import GaussianData, MetalRenderer
 
-from gs_lidar import (
-    CameraIntrinsics,
-    GaussianCloud,
-    MetalGaussianRenderer,
-    load_gaussian_ply,
-)
+from gs_lidar import CameraIntrinsics, GaussianPlyData
 
 # -----------------------------------------------------------------------------
 # Experiment configuration — edit these values before running the script.
@@ -52,18 +47,13 @@ CAMERA_DOWNWARD_PITCH_DEGREES = 15.0
 RERUN_UP_AXIS = "+Y"
 
 
-def load_scene(path: Path) -> GaussianCloud:
-    """Load the 3DGS PLY scene used by this camera experiment."""
+def load_scene(path: Path) -> GaussianPlyData:
+    """Load the canonical 3DGS PLY scene used by this camera experiment."""
     if not path.is_file():
         raise FileNotFoundError(
             f"PLY scene not found: {path}. Set PLY_PATH at the top of this file."
         )
-    return load_gaussian_ply(path)
-
-
-def to_camera_scene_xyzw(scene_wxyz: GaussianCloud) -> GaussianCloud:
-    """Convert PLY ``wxyz`` rotations once for both camera renderers."""
-    return replace(scene_wxyz, rotations=scene_wxyz.rotations[:, [1, 2, 3, 0]])
+    return GaussianPlyData.from_ply(path)
 
 
 def select_device() -> torch.device:
@@ -135,6 +125,27 @@ def create_camera_intrinsics() -> CameraIntrinsics:
     )
 
 
+def create_metal_renderer(
+    data: GaussianData,
+    intrinsics: CameraIntrinsics,
+) -> MetalRenderer:
+    """Create the reusable course_3dgs renderer for this fixed camera model."""
+    # The experiment exposes a conventional +Y-up camera. Image rows grow
+    # downward, so the course renderer receives a negative fy just like the
+    # previous lidar_sim-local copy did.
+    return MetalRenderer(
+        data,
+        H=intrinsics.height,
+        W=intrinsics.width,
+        fx=intrinsics.fx,
+        fy=-intrinsics.fy,
+        cx=intrinsics.cx,
+        cy=intrinsics.cy,
+        near=intrinsics.near,
+        far=intrinsics.far,
+    )
+
+
 def camera_frustum_line_strips(
     c2w: torch.Tensor,
     intrinsics: CameraIntrinsics,
@@ -165,7 +176,7 @@ def camera_frustum_line_strips(
     return [base, *sides]
 
 
-def initialize_rerun(scene: GaussianCloud) -> None:
+def initialize_rerun(scene: GaussianPlyData) -> None:
     """Open Rerun and log the immutable scene and circular trajectory."""
     import rerun as rr
 
@@ -195,16 +206,16 @@ def initialize_rerun(scene: GaussianCloud) -> None:
 
     rgb = scene.colors
     if rgb is None:
-        rgb = scene.means.new_tensor([160, 160, 200]) / 255
+        rgb = scene.positions.new_tensor([160, 160, 200]) / 255
     rgba = torch.cat(
-        (rgb.expand(scene.means.shape[0], 3), scene.opacities[:, None]), dim=-1
+        (rgb.expand(scene.positions.shape[0], 3), scene.opacities[:, None]), dim=-1
     )
     rr.log(
         "world/scene/gaussians",
         rr.GaussianSplats3D(
-            numpy(scene.means),
+            numpy(scene.positions),
             scales=numpy(scene.scales),
-            quaternions=numpy(scene.rotations),
+            quaternions=numpy(scene.rotations_xyzw),
             colors=numpy(rgba * 255).astype("uint8"),
         ),
         static=True,
@@ -252,20 +263,28 @@ def run_experiment() -> None:
         raise ValueError("orbit radius, step duration, and step count must be positive")
 
     device = select_device()
-    scene_wxyz_cpu = load_scene(PLY_PATH)
-    scene_xyzw_cpu = to_camera_scene_xyzw(scene_wxyz_cpu)
-    initialize_rerun(scene_xyzw_cpu)
+    scene = load_scene(PLY_PATH)
+    initialize_rerun(scene)
 
-    scene_xyzw = scene_xyzw_cpu.to(device)
-    renderer = MetalGaussianRenderer(scene_xyzw)
     camera_intrinsics = create_camera_intrinsics()
+    renderer_data = scene.to_renderer_data(device)
+    renderer = create_metal_renderer(renderer_data, camera_intrinsics)
     angular_velocity = math.radians(ANGULAR_VELOCITY_DEGREES_PER_SECOND)
+
+    print(
+        f"Loaded {renderer_data.num_gaussians:,} Gaussians with "
+        f"{renderer_data.sh_levels} SH level(s) "
+        f"({renderer_data.sh_coefficient_count} coefficients/channel)"
+    )
 
     for step in range(NUMBER_OF_STEPS):
         angle = angular_velocity * STEP_SECONDS * step
         c2w = camera_c2w(device, angle)
         render_started_at = time.perf_counter()
-        image = renderer.render(c2w, camera_intrinsics)
+        image = renderer.render(c2w)
+        # course_3dgs intentionally leaves synchronization to the caller. We
+        # synchronize here so the printed timing measures completed GPU work.
+        torch.mps.synchronize()
         render_seconds = time.perf_counter() - render_started_at
         log_frame(step, c2w, camera_intrinsics, image)
         print(
