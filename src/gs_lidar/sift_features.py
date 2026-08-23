@@ -40,13 +40,13 @@ class SiftFeatureDetector:
             detector.eval()
 
             if self.compile_detector:
-                # Compile the complete Kornia detector module rather than only
-                # BlobDoG/NMS submodules. Inductor may keep graph breaks where
-                # required, but all captured regions target the MPS backend.
+                # Let torch.compile choose when to introduce dynamic shapes.
+                # The detector reuses gaussian_blur2d across multiple pyramid
+                # resolutions, so forcing dynamic=False causes repeated
+                # shape-specialized recompilations and can hit the recompile limit.
                 detector = torch.compile(
                     detector,
                     backend="inductor",
-                    dynamic=False,
                     fullgraph=False,
                 )
 
